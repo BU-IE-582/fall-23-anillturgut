@@ -6,4 +6,4 @@ You can [check](https://github.com/anillturgut?tab=repositories) my other reposi
 
 ### Undergraduate Senior Design Project
 
-You can also check my undergrature senior design project about truck scheduling problem for Ekol Logistics. Model for minimizing [Tardiness](files/IE402_Gurobi_Tardiness.html) and the [# of Tardy Jobs](files/IE402_Gurobi_NumberOfTardy.html)
+You can also check my undergrature senior design project about truck scheduling problem for Ekol Logistics. Model for minimizing [Tardiness](files/IE402_Gurobi_Tardiness.html) and the [# of Tardy Jobs](files/IE402_Gurobi_NumberOfTardy.html).
