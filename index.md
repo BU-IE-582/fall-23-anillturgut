@@ -1,4 +1,4 @@
-## Welcome to my GitHub
+## Welcome to my GitHub Pages
 
 I am a Master student in Industrial Engineering Student.
 
