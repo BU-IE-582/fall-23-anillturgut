@@ -6,5 +6,7 @@ You can [check](https://github.com/anillturgut?tab=repositories) my other reposi
 
 ### Homeworks & Project 
 
-Here is the [Homework 1 description](files/IE582_Fall23_Homework1.pdf) for the Fall23.
-Here you can check [my approach]() to the Homework 1. Also, you can achieve the R and Rmd files through [here](files/).
+#### Homework1
+Here is the [Homework 1 description](files/HW1/IE582_Fall23_Homework1.pdf) for the Fall23.<br>
+Here you can check [my approach]() to the Homework 1.<br>
+Also, you can achieve the [R](files/HW1/) and [Rmd](files/HW1/) files <br>.
