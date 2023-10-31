@@ -1,0 +1,583 @@
+---
+title: "IE582 - HW 1"
+author: "Anıl Turgut - 2022702072"
+date: "2023-10-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction 
+
+In this assignment, I will do a study on data analysis and applications on 60 different stocks in Borsa Istanbul, their closing prices and corresponding time periods.
+
+Data analysis under different headings, preprocessing, PCA application and correlation analyzes will be performed when necessary.
+
+### Task 4.0 : Loading required libraries and data. 
+
+At first, We loaded the data to the R Environment to complete the parts of the question. Also, loaded some libraries providing the visualizations to interpret the data.
+
+```{r library,  message=FALSE, warning=FALSE}
+library(ggplot2)
+library(caret)
+library(data.table)
+library(zoo)
+library(GGally)
+library(gridExtra)
+```
+
+Note that the `path` is set to the folder in my computer. Please change it to run the commands properly.
+
+```{r load the data, message=FALSE, warning=FALSE}
+long <- data.table(read.csv("C:/Users/anil.turgut/Desktop/IE582/HW1/Dataset/all_ticks_long.csv"))
+
+wide <- data.table(read.csv("C:/Users/anil.turgut/Desktop/IE582/HW1/Dataset/all_ticks_wide.csv"))
+
+columns_wide <- colnames(wide)
+
+dim(wide)
+```
+
+There are 60 stock columns and a timestamp column. Also, almost 15 min interval of instances (approximately 50000) occur in the data.
+
+### Task 4.1 : Descriptive Analysis
+
+Let's begin by exploring data in terms of type, statistics, NA values etc. 
+
+When we look at the summary of the `wide` dataset of stocks, all the stock prices are defined as number type of data and the `timestamp` column is a type of chr. There are missing values in data, we are going to analyze these columns with missing values following.
+
+```{r Descriptive Analysis v1, message=FALSE, warning=FALSE}
+
+str(wide)
+
+```
+
+
+Since we are going to use the `timestamp` of the records in data analysis, we need to change its type from character to datetime (POSIX). Let's do this transformation: 
+
+```{r Descriptive Analysis v2, message=FALSE, warning=FALSE}
+
+wide$timestamp <- as.POSIXct(wide$timestamp, format = "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+class(wide$timestamp)
+
+```
+
+It worked well, let's move on with the statistics of the stocks and timestamp:
+
+When we examine the data summary, we see the average, minimum and maximum values of the stocks from 2012 to 2019. There are two problems I noticed at this point:
+
+- There seems to be a possibility of anomaly values in many stocks such as AEFES, AKBNK, ARCLK, because there is a serious gap between min and max values, except for means and quartiles. These should be examined in more detail during visualization and action should be taken when necessary.
+
+- A missing value appears in each stock column, and the main reason for this is that there is no corresponding data in the relevant timestamps. We also need to handle missing values for future applications such as PCA.
+
+```{r Descriptive Analysis v3, message=FALSE, warning=FALSE}
+
+summary(wide)
+
+```
+
+Let's start with the handling the missing values. In order to move on with the following parts of the tasks, we need to get rid of the NA values. In this homework, since there are many missing values, I come up with the filling these NA values with their neighbors' (+- 5 index) mean values instead of dropping them. In below, there is a code snippet trying to fill these NA values with the most appropriate way. Also, there is an example of one of the AEFES record before and after the operation (Info: neighbor's values are also tested in different stocks). 
+
+```{r Descriptive Analysis v4, message=FALSE, warning=FALSE}
+
+cat("Value of 368th AEFES record before NA Handling -> ",wide$AEFES[368],"\n")
+
+
+selected_columns <- wide[0:length(wide),2:61]
+colnames(selected_columns)
+window_size <- 5
+
+# Apply na.approx() to fill missing values in each column
+for (columnName in colnames(selected_columns)) {
+  if(any(is.na(wide[[columnName]]))){
+    wide[[columnName]] <- na.approx(wide[[columnName]], method = "linear", rule = window(window_size))
+  }
+}
+
+cat("Value of 368th AEFES record after NA Handling -> ",wide$AEFES[368],"\n")
+
+
+colSums(is.na(wide))
+
+```
+
+As can be seen in above, there is no missing value in our data from now on. So, we need to handle the second problem which is the anomaly records. Let's visualize the two stocks prices which are the two of my preferred stocks, and see how the anomaly values look like. Visualizations and anomaly points of `AEFES` and `CCOLA` can be seen below:
+
+Note that I defined threshold value as: mean - 3 stdev || almost zero. If it is less than this threshold, I conclude with anomaly point.
+
+
+```{r Descriptive Analysis v5, message=FALSE, warning=FALSE}
+
+anomaly_threshold_aefes <-  mean(wide$AEFES) - 3 * sqrt(var(wide$AEFES)) # Adjust this threshold as needed
+anomaly_values_aefes <- wide$AEFES < anomaly_threshold_aefes
+
+# Create a line chart with ggplot2 and highlight anomaly values
+ggplot(wide, aes(x = timestamp, y = AEFES)) +
+  geom_line() +
+  geom_point(data = wide[anomaly_values_aefes, ], aes(color = "Anomaly"), size = 3) +
+  labs(x = "Datetime", y = "Stock Closing Prices", title = "AEFES Stock Line Chart with Anomalies") +
+  scale_color_manual(values = c("Anomaly" = "red")) +
+  theme_minimal()
+
+
+
+anomaly_threshold_ccola <-  mean(wide$CCOLA) - 3 * sqrt(var(wide$CCOLA)) # Adjust this threshold as needed
+anomaly_values_ccola <- wide$CCOLA < anomaly_threshold_ccola
+
+# Create a line chart with ggplot2 and highlight anomaly values
+ggplot(wide, aes(x = timestamp, y = CCOLA)) +
+  geom_line() +
+  geom_point(data = wide[anomaly_values_ccola, ], aes(color = "Anomaly"), size = 3) +
+  labs(x = "Datetime", y = "Stock Closing Prices", title = "CCOLA Stock Line Chart with Anomalies") +
+  scale_color_manual(values = c("Anomaly" = "purple")) +
+  theme_minimal()
+
+```
+
+As can be clearly seen from both graphs, there is a point where the value has almost reached 0. This point is as we see at the min value in other stocks. It might have been caused by a momentary outage in that timestamp.
+
+It might be a better idea to try to fix the error rather than dropping this anomaly value directly. Therefore, below is a script that will solve this situation by averaging the values in the previous and next index.
+
+Also, I have selected the following 5 stocks to deeply analyze and make applications on. They are: `AEFES`, `AKSA`, `CCOLA`, `SISE`, `KCHOL`
+
+After running the script, the anomaly values are replaced with +-1 index's mean and visualizations make more sense. 
+```{r Descriptive Analysis v6, message=FALSE, warning=FALSE}
+
+selectedStockPairs <- c("AEFES","AKSA","CCOLA","SISE","KCHOL")
+
+isAnomaly <- function(columnName, index){
+  
+  flag <- FALSE
+  
+  currentCellValue <- wide[[columnName]][index]
+  
+  thresholdValue <- mean(wide[[columnName]]) - 3 * sqrt(var(wide[[columnName]]))
+  
+  if (currentCellValue < thresholdValue || currentCellValue < 0.5) {
+    flag <- TRUE
+  }
+  return(flag)
+}
+
+for (columnName in selectedStockPairs){
+  for (ind in 1:nrow(wide)){
+    if(isAnomaly(columnName,ind)){
+      cat("Old value in ",columnName," -> Index: ",ind," -> ", "Value: ", wide[[columnName]][ind],"\n")
+      wide[[columnName]][ind] <- round(mean(wide[[columnName]][ind - 1: ind + 1], na.rm = TRUE), digits = 4)
+      cat("New value in ",columnName," -> Index: ",ind," -> ", "Value: ", wide[[columnName]][ind],"\n")
+    }
+  }
+}
+
+```
+
+Now, visualizing the final plots of these 5 stocks is as following:
+
+```{r Descriptive Analysis v7, message=FALSE, warning=FALSE}
+
+plot(wide$timestamp, wide$AEFES, type = "l", xlab = "Timestamp", ylab = "Stock Prices", main = "AEFES Stock Prices vs. Time")
+plot(wide$timestamp, wide$AKSA, type = "l", xlab = "Timestamp", ylab = "Stock Prices",col = "blue", main = "AKSA Stock Prices vs. Time")
+plot(wide$timestamp, wide$CCOLA, type = "l", xlab = "Timestamp", ylab = "Stock Prices",col = "navyblue", main = "CCOLA Stock Prices vs. Time")
+plot(wide$timestamp, wide$SISE, type = "l", xlab = "Timestamp", ylab = "Stock Prices",col = "lightblue", main = "SISE Stock Prices vs. Time")
+plot(wide$timestamp, wide$KCHOL, type = "l", xlab = "Timestamp", ylab = "Stock Prices",col = "lightblue3", main = "KCHOL Stock Prices vs. Time")
+
+```
+
+
+Let's do the final analysis of the data in terms of descriptive analysis. Let's print some useful information of 5 stocks such as price range, standard deviation etc. And then visualize their histogram plots to see whether their values are skewed or not. 
+
+```{r Descriptive Analysis v8, message=FALSE, warning=FALSE}
+
+print("Descriptive summary analysis")
+for (col in selectedStockPairs){
+  cat("Column Name: ", col, "\n")
+  cat("Minimum Price: ", min(wide[[col]]), "\n")
+  cat("Maximum Price: ", max(wide[[col]]), "\n")
+  cat("Price Range: ",max(wide[[col]]) -  min(wide[[col]]), "\n")
+  cat("Median Price: ", median(wide[[col]]), "\n")
+  cat("Average Price: ", mean(wide[[col]]), "\n")
+  cat("Stdev of Price: ", sd(wide[[col]]), "\n")
+  cat("-------------------","\n")
+  
+}
+
+hist(wide$AEFES,breaks = 20, main = "Histogram of AEFES")
+hist(wide$AKSA, breaks = 20, main = "Histogram of AKSA")
+hist(log(wide$AKSA), breaks = 20, main = "Histogram of log(AKSA)")
+hist(wide$CCOLA,breaks = 20, main = "Histogram of CCOLA")
+hist(log(wide$CCOLA), breaks = 20, main = "Histogram of log(CCOLA)")
+plot(x=wide$timestamp,y=log(wide$CCOLA),type="l")
+
+```
+
+
+```{r Descriptive Analysis v9, message=FALSE, warning=FALSE}
+wide_temp <- wide[,c("timestamp","AEFES","AKSA","CCOLA","SISE","KCHOL")]
+
+wide_combined <- data.frame( "AEFES" = wide_temp[,"AEFES"],
+                      "AKSA" = wide_temp[,"AKSA"],
+                        "CCOLA" = wide_temp[,"CCOLA"],
+                          "SISE" = wide_temp[,"SISE"],
+                            "KCHOL" = wide_temp[,"KCHOL"])
+matplot(x = wide_temp$timestamp,y = wide_combined, type = "l",pch=1,col = 1:5,
+        xlab = "Time", ylab = "Stock Prices")
+legend("topright", legend = c("AEFES","AKSA","CCOLA","SISE","KCHOL"), col=1:5,pch=0.2,title = "Stock", cex = 0.5)
+
+```
+
+
+It can be seen that the prices of AEFES looks like rightly skewed, however in AKSA or CCOLA, we cannot say neither they are right or left skewed. Moreover, we also looked their log() values in histogram and line chart. It is kind of improved but not completed. 
+
+For now, our date is ready to move on with the further tasks.
+
+
+### Task 4.2 : Moving Window Correlation
+
+Starting with the choosing the pairs of stock prices interested. In the previous task, I have selected some stocks to work deeply on and moving on these selections also. 
+
+Let's filtered out the whole dataframe to the columns we need. 
+
+Also, I have created two new columns indicating the year and the month (as string) information which we are going to used in window correlations.
+
+```{r Moving Window Correlation v1, message=FALSE, warning=FALSE}
+
+wide_filtered <- wide[,c("timestamp","AEFES","AKSA","CCOLA","SISE","KCHOL")]
+
+wide_filtered$Year <- format(wide_filtered$timestamp, format = "%Y")
+wide_filtered$Month <- month.name[as.numeric(format(wide_filtered$timestamp, format = "%m"))]
+
+wide_filtered <- wide_filtered[, c("timestamp","Year","Month","AEFES","AKSA","CCOLA","SISE","KCHOL")]
+head(wide_filtered)
+
+```
+
+Now, our dataframe is ready to be analysed. In below, correlation matrix between each columns and 2 visualizations of correlation graphs of each pair of stocks can be seen.
+
+
+```{r Moving Window Correlation v2, message=FALSE, warning=FALSE}
+
+cor(wide_filtered[,c("AEFES","AKSA","CCOLA","SISE","KCHOL")])
+
+ggcorr(wide_filtered,
+       method = c("pairwise"),
+       nbreaks = 6,
+       hjust = 0.8,
+       label = TRUE,
+       label_size = 3,
+       color = "grey20")
+
+plot(~ AEFES + AKSA + CCOLA + SISE + KCHOL, data = wide_filtered, main = "Stock Price's Correlation")
+
+```
+
+When we look at the plots, we can see that pairs [`KCHOL`,`SISE`], [`KCHOL`,`AKSA`], [`AKSA`,`SISE`] are highly (positively) correlated with each other. It means that their prices' trends are highly similar to each other. Where as pair [`CCOLA`,`SISE`] is kind of negatively correlated. Moreover, `AEFES` is not correlated with any other stock in the data. 
+
+As it can be seen in the second plot, scatter plot of the [`KCHOL`,`SISE`] and [`KCHOL`,`AKSA`] shows us a meaningful pattern in terms of linearity. 
+
+In this part, I have commented out the correlation graphs. Printed out the monthly/yearly correlations instead of using graphs. But, it can be printed out by commenting-out. 
+
+```{r Moving Window Correlation v3, message=FALSE, warning=FALSE}
+
+monthList <- unique(wide_filtered$Month)
+yearList <- unique(wide_filtered$Year)
+
+movingWindowCorr <- function(windowType,uniqueList){
+  
+    if(windowType == "Month"){
+      for (month in uniqueList){
+        filt <- subset(wide_filtered, Month == month)
+        #cat(month,": ", round(cor(filt$SISE,filt$KCHOL),digits=4), "\n" )
+        cat("*-------  ",month,"\n")
+        print(cor(filt[,c("AEFES","AKSA","CCOLA","SISE","KCHOL")]))
+        print("*------------------------------*")
+        # plotCorr <-ggcorr(filt,
+        #                   method = c("pairwise"),
+        #                   nbreaks = 6,
+        #                   hjust = 0.8,
+        #                   label = TRUE,
+        #                   label_size = 3,
+        #                   label_round = 3,
+        #                   color = "grey20")
+        # print(plotCorr)
+      } 
+    } else if (windowType == "Year"){
+      
+      for (year in uniqueList){
+        filt <- subset(wide_filtered, Year == year)
+        cat("*-------  ",year,"\n")
+        print(cor(filt[,c("AEFES","AKSA","CCOLA","SISE","KCHOL")]))
+        print("*------------------------------*")
+        # plotCorr <-ggcorr(filt,
+        #                   method = c("pairwise"),
+        #                   nbreaks = 6,
+        #                   hjust = 0.8,
+        #                   label = TRUE,
+        #                   label_size = 3,
+        #                   label_round = 3,
+        #                   color = "grey20")
+        # print(plotCorr)
+      }
+    }
+  
+}
+
+movingWindowCorr("Month",monthList)
+movingWindowCorr("Year",yearList)
+
+```
+
+
+```{r Moving Window Correlation v4, message=FALSE, warning=FALSE}
+
+corrByMonthAEFES_KCHOL <- c()
+corrByMonthCCOLA_AEFES <- c()
+corrByMonthKCHOL_AKSA <- c()
+corrByMonthSISE_KCHOL <- c()
+i <- 1
+for (month in monthList){
+  
+  month_df <- subset(wide_filtered, Month == month)
+  corrByMonthAEFES_KCHOL[i] <- round(cor(month_df$AEFES,month_df$KCHOL),digits=2)
+  corrByMonthCCOLA_AEFES[i] <- round(cor(month_df$CCOLA,month_df$AEFES),digits=2)
+  corrByMonthKCHOL_AKSA[i] <- round(cor(month_df$KCHOL,month_df$AKSA),digits=2)
+  corrByMonthSISE_KCHOL[i] <- round(cor(month_df$SISE,month_df$KCHOL),digits=2)
+  i <- i + 1
+  
+}
+
+
+monthCorrData <- data.frame("Month" = unique(wide_filtered$Month), "AEFES_KCHOL" = corrByMonthAEFES_KCHOL
+                ,"CCOLA_AEFES" = corrByMonthCCOLA_AEFES, "KCHOL_AKSA" = corrByMonthKCHOL_AKSA,
+                "SISE_KCHOL" = corrByMonthSISE_KCHOL)
+
+monthCorrDataCombined <- data.frame( "AEFES_KCHOL" = monthCorrData[,"AEFES_KCHOL"],
+                             "CCOLA_AEFES" = monthCorrData[,"CCOLA_AEFES"],
+                             "KCHOL_AKSA" = monthCorrData[,"KCHOL_AKSA"],
+                             "SISE_KCHOL" = monthCorrData[,"SISE_KCHOL"])
+matplot(y = monthCorrDataCombined, type = "l",pch=1,col = 1:4,
+        xlab = "Time", ylab = "Correlation")
+legend("right", legend = c("AEFES_KCHOL","CCOLA_AEFES","KCHOL_AKSA","SISE_KCHOL"),
+       col=1:4,pch=0.2,cex = 0.5)
+
+```
+
+```{r Moving Window Correlation v5, message=FALSE, warning=FALSE}
+
+corrByYearAEFES_KCHOL <- c()
+corrByYearCCOLA_AEFES <- c()
+corrByYearKCHOL_AKSA <- c()
+corrByYearSISE_KCHOL <- c()
+i <- 1
+for (year in yearList){
+  
+  year_df <- subset(wide_filtered, Year == year)
+  corrByYearAEFES_KCHOL[i] <- round(cor(year_df$AEFES,year_df$KCHOL),digits=2)
+  corrByYearCCOLA_AEFES[i] <- round(cor(year_df$CCOLA,year_df$AEFES),digits=2)
+  corrByYearKCHOL_AKSA[i] <- round(cor(year_df$KCHOL,year_df$AKSA),digits=2)
+  corrByYearSISE_KCHOL[i] <- round(cor(year_df$SISE,year_df$KCHOL),digits=2)
+  i <- i + 1
+  
+}
+
+
+yearCorrData <- data.frame("Year" = unique(wide_filtered$Year), "AEFES_KCHOL" = corrByYearAEFES_KCHOL
+                            ,"CCOLA_AEFES" = corrByYearCCOLA_AEFES, "KCHOL_AKSA" = corrByYearKCHOL_AKSA,
+                            "SISE_KCHOL" = corrByYearSISE_KCHOL)
+
+yearCorrDataCombined <- data.frame( "AEFES_KCHOL" = yearCorrData[,"AEFES_KCHOL"],
+                                     "CCOLA_AEFES" = yearCorrData[,"CCOLA_AEFES"],
+                                     "KCHOL_AKSA" = yearCorrData[,"KCHOL_AKSA"],
+                                     "SISE_KCHOL" = yearCorrData[,"SISE_KCHOL"])
+matplot(x=yearCorrData$Year,y = yearCorrData[,-1], type = "l",pch=1,col = 1:4,
+        xlab = "Time", ylab = "Correlation")
+legend("bottomright", legend = c("AEFES_KCHOL","CCOLA_AEFES","KCHOL_AKSA","SISE_KCHOL"),
+       col=1:4,pch=0.2,cex = 0.5)
+
+```
+The charts above show correlations between stocks month by month and year by year. Coloring was done according to the values of the correlations.
+
+Now I will evaluate the top 3 stock pairs according to the outputs on these charts.
+
+- [`KCHOL`,`SISE`] : When we look at the general correlation matrix, SISE and KCHOL stocks are the stocks with the highest positive correlation. Based on the graphs above, the month in which this pair reaches the highest correlation value is June and the month in which it has the lowest correlation is August. On the other hand, when we examine it on a yearly basis, the correlation between these two stocks has a high variance, the highest in 2016 and the lowest in 2018.
+- [`KCHOL`,`AKSA`] : Based on the graphs above, the month in which this pair reaches the highest correlation value is September and the month in which it has the lowest correlation is April. On the other hand, when we examine it on a yearly basis, the correlation between these two stocks has a high variance and lower values than general anaylsis, the highest in 2017 and the lowest in 2012.
+- [`AKSA`,`SISE`] : Based on the graphs above, the month in which this pair reaches the highest correlation value is September & 2017 and the month in which it has the lowest correlation is December & 2019. 
+
+As a general comment, we can say that the correlation values obtained when we examine the stocks by years have both lower and higher variances compared to the evaluations by months. This means that repeating this analysis more often will yield more logical results.
+
+The reasons behind the correlations may vary depending on different parameters such as the sector in which the companies are located, their volumes, and new actions taken. When we look at another output of these graphs, we see that companies such as SISE and KCHOL generally have a high correlation between May and September, while the correlation is very low until the beginning of Autumn and Spring, and even negative correlation patterns are observed in some months. Finally, it can be said that the month in which stock correlations were highest was September and the highest values were in 2017.
+
+Now let's move on to the third part of the task, namely dimensionality reduction.
+
+
+### Task 4.3 : Principal Component Analysis (PCA)
+
+In this part of the task, we will use PCA, one of the dimensionality reduction methods. You will see 3 different PCA objects in the code script below (took a support from lecture notes). The first of these will be a PCA containing 60 columns, and the other two will be a PCA containing 5 stocks of my choice.
+
+```{r Principal Component Analysis (PCA) v1, message=FALSE, warning=FALSE}
+
+pcaObj_all <- princomp(wide[,-1],cor=T)
+
+summary(pcaObj_all)
+
+plot(pcaObj_all)
+```
+
+When we examine the PCA object we created with the data containing all stocks, we can cover more than 90% of the variance with the first 7 components. I did not printed the loadings of this PCA summary but I have analyzed in detail. Even though first 2 components can explain almost 70% of the variance of data, their linear function is quite complicated and there are no specific latent variables I could say. 
+
+Stocks with high correlation tends to have same coefficient in PC linear equation such as ARCLK and AKBNK. Their sector are different, it might be affected by the stock volume etc.
+
+Let's also do PCA for the selected stocks in my assignment: 
+
+
+```{r Principal Component Analysis (PCA) v2, message=FALSE, warning=FALSE}
+
+pcaObj <- princomp(wide_filtered[,-1:-3],cor=T)
+summary(pcaObj, loadings = T)
+biplot(pcaObj, scale = 0)
+plot(pcaObj)
+
+```
+
+```{r Principal Component Analysis (PCA) v3, message=FALSE, warning=FALSE}
+
+logPcaObj <- princomp(log(wide_filtered[,-1:-3]),cor=T)
+summary(logPcaObj, loadings = T)
+biplot(logPcaObj, scale = 0)
+plot(logPcaObj)
+
+```
+
+
+For the first PCA object created using 5 stocks, Its 3 component can cover almost 95% of the variance. 
+
+- PC1: First principal component can explain SISE and KCHOL data most since the coefficients in the equation are highest (abs value). Also, we can say that there are latent variables such as [`KCHOL`,`SISE`,`AKSA`] & [`AEFES`,`CCOLA`]. It means that when KCHOL's stock price is high or low, AKSA and SISE are in a similar downward and upward trend. Vice versa for AEFES & CCOLA
+
+- PC2: Second principal component emphasizes the AFESE mostly and then CCOLA. It covers the variation of these specific stocks.
+
+In the first plot, which is the rotations of the eigenvectors, [`KCHOL`,`SISE`,`AKSA`] looks like the same direction, covering the similar data var, whereas [`AEFES`,`CCOLA`] is on another direction. 
+(Data points look annoying, I could not find a way to beautify it, also I have find 'biplot' usage from internet).
+
+Histogram basically shows the variances of principal components, its covered variance is decreasing as expected.
+
+
+For the second PCA object using log values of these 5 stocks, Its 3 components can cover almost 96 of the variance, little bit higher than first.
+
+But, its' PC variables and equations carry similar kind of information with first one. Since the logarithm operation can violate some assumption such as normality, linearity, I think that tradeoff between coverage of variance and loss of assumption is not acceptable.
+
+Thus, we can use the first pca object (pcaObj) with at most 3 components (2 is also acceptable depending on the situation). Using these principal components, we can effectively reduce the dimension of the data and preparing input features for possible forward learning application such as clustering.
+
+Now, we can move on to the final part of the assignment.
+
+
+### Task 4.4 : Inference with Google Trends
+
+In the last part of the task, we are going to analyze the Google Trends data and compare the results/visualization with the work we've already done in the previous parts.
+
+
+In https://trends.google.com/trends/, I have searched for the keywords `IST:AEFES`,`IST:AKSA`,`IST:CCOLA`,`IST:SISE` and `IST:KCHOL` and filter the dates from 2012-10 to 2019-07. Then, downloaded the corresponding 5 csv files. Let's upload these csv files to the R environment: 
+
+```{r Inference with Google Trends v1, message=FALSE, warning=FALSE}
+
+google_aefes <- 
+          fread("C:/Users/anil.turgut/Desktop/IE582/HW1/Dataset/GoogleTrend/multiTimelineAEFES.csv")
+google_aksa <- 
+  fread("C:/Users/anil.turgut/Desktop/IE582/HW1/Dataset/GoogleTrend/multiTimelineAKSA.csv")
+google_ccola <- 
+  fread("C:/Users/anil.turgut/Desktop/IE582/HW1/Dataset/GoogleTrend/multiTimelineCCOLA.csv")
+google_sise <- 
+  fread("C:/Users/anil.turgut/Desktop/IE582/HW1/Dataset/GoogleTrend/multiTimelineSISE.csv")
+google_kchol <- 
+  fread("C:/Users/anil.turgut/Desktop/IE582/HW1/Dataset/GoogleTrend/multiTimelineKCHOL.csv")
+
+df_google <- data.frame("Time"=google_aefes[,1], "AEFES"=google_aefes[,-1], "AKSA"=google_aksa[,-1],
+                        "CCOLA"=google_ccola[,-1],"SISE"=google_sise[,-1], "KCHOL"=google_kchol[,-1])
+
+colnames(df_google) <- c("Month","AEFES","AKSA","CCOLA","SISE","KCHOL")
+
+head(df_google)
+
+```
+
+Now, I have created a "Year" column from splitting the "Month" column. Also, each stock column contains its own volume values. 
+
+```{r Inference with Google Trends v2, message=FALSE, warning=FALSE}
+
+for (ind in 1:nrow(df_google)){
+  df_google[["Year"]][ind] <- strsplit(df_google[["Month"]][ind], "-")[[1]][1]
+}
+
+df_google <- df_google[, c("Month","Year","AEFES","AKSA","CCOLA","SISE","KCHOL")]
+df_google_month <- df_google[, c("Month","AEFES","AKSA","CCOLA","SISE","KCHOL")]
+
+df_google_month
+
+```
+
+Visualization of 5 stocks in line chart can be seen below: 
+
+```{r Inference with Google Trends v3, message=FALSE, warning=FALSE}
+
+# Line chart of 5 stocks in google trend
+df_google_combined <- data.table::melt(df_google_month, id.var = "Month")
+
+
+ggplot(df_google_combined, aes(x = Month, y = value, color = variable, group=variable)) +
+  geom_line() +
+  theme_minimal()
+```
+
+Finally, I have created a dataframe containing the correlation values between 5 stocks grouped by years (similar in Task 4.2). And visualized it through multiple line chart.
+```{r Inference with Google Trends v4, message=FALSE, warning=FALSE}
+
+corrGoogleByYearAEFES_KCHOL <- c()
+corrGoogleByYearCCOLA_AEFES <- c()
+corrGoogleByYearKCHOL_AKSA <- c()
+corrGoogleByYearSISE_KCHOL <- c()
+i <- 1
+for (year in unique(df_google$Year)){
+  
+  year_df <- subset(df_google, Year == year)
+  corrGoogleByYearAEFES_KCHOL[i] <- round(cor(year_df$AEFES,year_df$KCHOL),digits=2)
+  corrGoogleByYearCCOLA_AEFES[i] <- round(cor(year_df$CCOLA,year_df$AEFES),digits=2)
+  corrGoogleByYearKCHOL_AKSA[i] <- round(cor(year_df$KCHOL,year_df$AKSA),digits=2)
+  corrGoogleByYearSISE_KCHOL[i] <- round(cor(year_df$SISE,year_df$KCHOL),digits=2)
+  i <- i + 1
+  
+}
+
+googleYearCorrData <- data.frame("Year" = unique(df_google$Year), "AEFES_KCHOL" = corrGoogleByYearAEFES_KCHOL
+                           ,"CCOLA_AEFES" = corrGoogleByYearCCOLA_AEFES, "KCHOL_AKSA" = corrGoogleByYearKCHOL_AKSA,
+                           "SISE_KCHOL" = corrGoogleByYearSISE_KCHOL)
+googleYearCorrData
+
+matplot(x=googleYearCorrData$Year,y = googleYearCorrData[,-1], type = "l",pch=1,col = 1:4,
+        xlab = "Time", ylab = "Correlation")
+legend("topright", legend = c("AEFES_KCHOL","CCOLA_AEFES","KCHOL_AKSA","SISE_KCHOL"),
+       col=1:4,pch=0.2,cex = 0.5)
+```
+
+Let's also plot the correlation multiple line chart we've created in the Task4.2
+
+```{r Inference with Google Trends v5, message=FALSE, warning=FALSE}
+
+matplot(x=yearCorrData$Year,y = yearCorrData[,-1], type = "l",pch=1,col = 1:4,
+        xlab = "Time", ylab = "Correlation")
+legend("bottomright", legend = c("AEFES_KCHOL","CCOLA_AEFES","KCHOL_AKSA","SISE_KCHOL"),
+       col=1:4,pch=0.2,cex = 0.5)
+```
+
+After comparing 2 graphs, there are some similar patterns between stock pair correlations, but mostly they are different in terms of values. Price correlation vs. Volume of visited/search correlation might be independent from each other. That's also different insight of this work.
+
+### Conclusion
+
+In this assignment, we tried to examine in detail 60 different stocks and their closing prices between 2012-2019. First, we worked on data preprocessing, then correlation analysis and dimensionality reduction (PCA) to do data mining. Finally, we tried to make an inference with the data we obtained from Google Trend.
+
+
+A predictive analysis can be made by organizing these outputs and using them as input in a suitable model/algorithm, and then the quality of the work can be tested again with the metrics we will reach.
+
+
+
+                                                                                          `Anıl Turgut - 2022702072`
+                                                                                            

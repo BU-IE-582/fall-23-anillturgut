@@ -8,5 +8,5 @@ You can [check](https://github.com/anillturgut?tab=repositories) my other reposi
 
 #### Homework 1
 Here is the [Homework 1 description](files/HW1/IE582_Fall23_Homework1.pdf) for the Fall23.<br>
-Here you can check [my approach]() to the Homework 1.<br>
-Also, you can achieve the [R](files/HW1/) and [Rmd](files/HW1/) files. <br>
+Here you can check [my approach](files/HW1/IE582HW1.html) to the Homework 1.<br>
+Also, you can achieve the [R](files/HW1/IE582HW1_R.R) and [Rmd](files/HW1/IE582HW1.Rmd) files. <br>
