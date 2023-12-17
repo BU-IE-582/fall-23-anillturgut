@@ -1,0 +1,2506 @@
+---
+title: "IE582 Homework 2"
+author: "Anıl Turgut - 2022702072"
+date: "2023-12-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction 
+
+In this assignment, we will examine the performance and suitability of the different Machine Learning algorithms we learned in 582 lessons on 5 different types of datasets. I have generally used the lecture notes and example scripts in the moodle, but I have took some help while implementing knn.reg() (kNN regression), kknn() (for manhattan distance).
+
+We will examine 5 different datasets in accordance with the formats specified in Assignment separately in this report. It will be a long report since all 5 cases are analyzed, preprocessed, modeled and tested with 4 main learning algorithms (with cross validation to tune parameters). Cases are listed below (ordered):  
+
+-Diabetes Case
+-Student Success Case
+-Malware Type Detection Case
+-Glioma Cancer Detection Case
+-Predicting Large-scale Wave Energy Case
+  
+There was some rules about dataset in the assignment page in the moodle in terms of dataset requirements. Below shows which dataset satisfies which rule/rules:
+
+![Dataset Rules](C:/Users/anil.turgut/Desktop/582HW2/dataset.JPG)
+
+### Initialization : Loading required libraries. 
+
+At first, We loaded the data to the R Environment to complete the parts of the question. Also, loaded some libraries providing the visualizations to interpret the data and machine learning algorithms to fit the model etc..
+
+```{r library,  message=FALSE, warning=FALSE}
+library(data.table)
+library(tidyverse)
+library(ggplot2)
+library(rpart.plot)
+library(skimr)
+library(GGally)
+library(caret) # for machine learning and predictive modeling
+library(class) # for kNN
+library(kknn) # for kNN with Manhattan Distance
+library(rpart) # for rpart
+library(gbm) # for Boosted Decision Trees
+library(randomForest) # for random forests
+library(reshape2) # for graphs
+library(FNN)
+library(class)
+require(rattle)
+library(pROC)
+library(pdp)
+library(MLmetrics)
+library(magick)
+```
+
+Note that the `path` is set to the folder including the 5 different datasets in my computer. Please change it to run the commands properly.
+
+```{r data_path, message=FALSE, warning=FALSE}
+data_path <- "C:/Users/anil.turgut/Desktop/582HW2/Dataset/"
+```
+
+## Diabetes Case
+### Part 1.0  : Explaining the Diabetes Case and loading the data.
+
+Diabetes is a serious chronic disease in which individuals lose the ability to effectively regulate levels of glucose in the blood, and can lead to reduced quality of life and life expectancy. Early diagnosis can lead to lifestyle changes and more effective treatment, making predictive models for diabetes risk important tools for public and public health officials.
+
+In this part of the assignment, we mainly try to diagnose the diabetes disease. Let's start by loading the data to the environment.
+
+```{r load the data, message=FALSE, warning=FALSE}
+diabetes_data_path <- paste0(data_path,"Diabetes/diabetes.csv")
+
+diabetes_data <- read.csv(diabetes_data_path)
+
+head(diabetes_data)
+```
+
+### Part 1.1  : Data Analysis & Exploring Data & Preprocessing
+
+```{r data analysis, message=FALSE, warning=FALSE}
+dim(diabetes_data)
+
+str(diabetes_data)
+
+summary(diabetes_data)
+```
+
+Analyzing the data whether it has null values. If it has, then we need to handle the missing values.
+
+```{r data analysis v2, message=FALSE, warning=FALSE}
+colSums(sapply(diabetes_data, is.na))
+
+skim(diabetes_data)
+```
+
+Can be seen in the data, there is no missing values, which is a good sign for us. First, we need to factorize the target value `Diabetes_binary`. Then, we also need to get rid of the duplicate values. 
+
+```{r data analysis v3, message=FALSE, warning=FALSE}
+diabetes_data$Diabetes_binary <- as.factor(diabetes_data$Diabetes_binary)
+
+diabetes_data <- diabetes_data[!duplicated(diabetes_data), ]
+```
+
+We are ready to move on. Let's make some visualizations to understand data more. It can be seen that there is an imbalance in the class (target) variable.
+```{r data analysis v4, message=FALSE, warning=FALSE}
+ggplot(diabetes_data, aes(x = Diabetes_binary )) +
+  geom_bar(stat = "count") +
+  labs(title = "Count of Diabetes", x = "Having Diabetes", y = "Count")
+
+ggcorr(diabetes_data,
+       method = c("pairwise"),
+       nbreaks = 6,
+       hjust = 0.8,
+       label = TRUE,
+       label_size = 3,
+       color = "grey20")
+```
+
+### Part 1.2  : Train & Test Split for Modeling (Scaled Split)
+
+In order to train the model and then the test its performance, we need to split the data as training and test datasets. Before hand, we also need to scale the features (except the target feature) while using the K-Nearest-Neighbor algorithm since it is highly affected from feature's scale. 
+
+In order not to mutate the main dataset, we'll copy it and then make the scale and split operation. 
+```{r scaling and data split, message=FALSE, warning=FALSE}
+# Copying the main dataset and scaling the features
+scaled_diabetes_data <- diabetes_data
+scaled_diabetes_data[,-1] <- scale(scaled_diabetes_data[,-1])
+
+validationIndex <- createDataPartition(scaled_diabetes_data$Diabetes_binary, p=0.70, list=FALSE)
+
+knn_train <- scaled_diabetes_data[validationIndex,] # 70% of data to training
+knn_test <- scaled_diabetes_data[-validationIndex,] 
+
+cat("Dimension of the main dataset:",dim(diabetes_data))
+cat("Dimension of the train dataset:",dim(knn_train))
+cat("Dimension of the test dataset:",dim(knn_test))
+```
+
+Dataset is scaled, has no missing and duplicated values. It is ready to be used in algorithms.
+
+### Part 1.3  : kNN Algorithm (k-Nearest Neighbor)
+
+Let's start with the kNN algorithm. The algorithm is based on the idea that similar data points tend to be close to each other in the feature space. In other words, the class or value of an unknown data point can be predicted by examining its k-nearest neighbors.
+
+There are two parameters to consider: the distance measure and the number of neighbors. We are mainly interested in two distance measures in this assignment: Euclidean and Manhattan Distance.  
+
+Let's do the Cross Validation to find the optimal k (# of nearest neighbor): 
+```{r knn v1, message=FALSE, warning=FALSE}
+# 10-fold Cross Validation
+trainControl <- trainControl(method="repeatedcv", number=10, repeats=3)
+metric <- "Accuracy"
+
+set.seed(10)
+fit.knn <- train(Diabetes_binary~., data=knn_train, method="knn",
+                 metric=metric ,trControl=trainControl)
+knn.optimal.k <- fit.knn$bestTune # keep this Initial k for testing with knn() function in next section
+
+print(fit.knn)
+
+# Plotting the Accuracy values with respect to the different k. 
+plot(fit.knn)
+```
+
+Accuracy was used to select the optimal model using the largest value.
+After the report of the CV and the plot shows that the final value used for the model was k = 9 and it is the optimum k value for the model.
+
+Confusion matrix for k = 9 is as follows: 
+```{r knn v2, message=FALSE, warning=FALSE}
+prediction <- predict(fit.knn, newdata = knn_test)
+cm_knn <- confusionMatrix(prediction, knn_test$Diabetes_binary)
+print(cm_knn)
+```
+
+Let's do the analysis for different types of k such as the floor of square root of the dataset size (row)
+
+```{r knn v3, message=FALSE, warning=FALSE}
+initial_k <- sqrt(NROW(scaled_diabetes_data))
+initial_k
+
+knn.floor <- knn(train=knn_train[,-1], test=knn_test[,-1], 
+                 cl=knn_train$Diabetes_binary, k=floor(initial_k))
+
+# use confusion matrix to calculate accuracy
+cm.floor <- confusionMatrix(knn_test$Diabetes_binary,knn.floor)
+cm.floor
+```
+
+Its accuracy is better but it is misleading since there is an imbalancing in the dataset. Meaning that there much mure "0" diabetes target values occur. This model was not able to identify the negative cases well.
+
+Finally, lets also look at the model with Manhattan distance using `kknn` library.
+```{r knn v4, message=FALSE, warning=FALSE}
+knn.manhattan <- train.kknn(Diabetes_binary ~ ., data = knn_train, ks = 9, scale = TRUE, distance = 1)
+predictions.manhattan <- predict(knn.manhattan, newdata = knn_test)
+
+cm.manhattan <- table(predictions.manhattan, knn_test$Diabetes_binary)
+print(cm.manhattan)
+accuracy.manhattan <- sum(diag(cm.manhattan)) / sum(cm.manhattan)
+print(paste("Accuracy for kNN with Manhattan Distance:", round(accuracy.manhattan,2)))
+```
+
+Performance of the `Manhattan kNN` is a little worse than the `Euclidean kNN`. 
+
+Thus, we decided that the best model that explains this dataset is the kNN with `k = 9 & distance = Euclidean`.
+
+```{r knn v5, message=FALSE, warning=FALSE}
+knn.best <- knn(train=knn_train[,-1], test=knn_test[,-1], cl=knn_train$Diabetes_binary, k= 9)
+cf <- confusionMatrix(knn_test$Diabetes_binary,knn.best)
+print(cf)
+```
+
+
+### Part 1.4  : Decision-Tree Algorithm
+
+Let's move with the second one which is the Decision Tree (DT) algorithm. 
+
+First, arranging the dataset in order not to mutate original one, we copy from it. 
+
+```{r dt v1, message=FALSE, warning=FALSE}
+# Copying the main dataset
+diabetes_data_dt <- data.table(diabetes_data)
+
+head(diabetes_data_dt)
+dim(diabetes_data_dt)
+```
+
+```{r dt v2, message=FALSE, warning=FALSE}
+# Remove rows with any NA values
+diabetes_data_dt <- na.omit(diabetes_data_dt)
+validationIndex <- createDataPartition(diabetes_data_dt$Diabetes_binary, p=0.70, list=FALSE)
+
+dt_train <- diabetes_data_dt[validationIndex,] # 70% of data to training
+dt_test <- diabetes_data_dt[-validationIndex,]
+
+cat("Dimension of the main dataset:",dim(diabetes_data_dt))
+cat("Dimension of the train dataset:",dim(dt_train))
+cat("Dimension of the test dataset:",dim(dt_test))
+```
+
+Dataset is ready to be learned and now we are going to implement a manual cross validation to tune the hyperparameters for the decision tree and we are going to look at its Accuracy value in each iteration. 
+
+Assuming the tuning hyperparameter will be only the minimal number of observations per tree leaf. Setting complexity parameter to zero and minimum number of observations to split as the twice as the minimal number
+of observations per tree leaf.
+
+In the end, we are going to store them in df to find the best model. 
+
+```{r dt v3, message=FALSE, warning=FALSE}
+# Create a data frame to store cross-validation results
+cv_results <- data.frame(minbucket = numeric(), accuracy = numeric())
+
+set.seed(15)
+
+# Define a range of minsplit values to try
+minbucket_values <- c(1, 5, 10, 15, 20, 25, 50) 
+
+# Perform cross-validation for each minbucket value
+for (minbucket_val in minbucket_values) {
+  # Create a decision tree model with the current minbucket value
+  tree_model <- rpart(Diabetes_binary~.,diabetes_data_dt,method='class',
+                      control=rpart.control(cp=0, minbucket = minbucket_val, minsplit = 2*minbucket_val))
+
+  predictions <- predict(tree_model, newdata = dt_train, type = "class")
+  correct_predictions <- sum(predictions == dt_train$Diabetes_binary)
+  # Calculate accuracy
+  accuracy <- round(correct_predictions / nrow(dt_train),5)
+  
+  # Store the results in the data frame
+  cv_results <- rbind(cv_results, data.frame(minbucket = minbucket_val, accuracy = accuracy))
+}
+
+# Print the cross-validation results
+print(cv_results)
+```
+
+Looks like the model with `minbucket` = 1 is the best model in terms of accuracy, lets also analyze its ROC, AUC and confusion matrix.
+
+```{r dt v4, message=FALSE, warning=FALSE}
+# Optimum hyperparameter
+minbucket_val <- 1
+best_tree_model <- rpart(Diabetes_binary~.,diabetes_data_dt,method='class',
+                    control=rpart.control(cp=0, minbucket = minbucket_val, minsplit = 2*minbucket_val))
+
+fancyRpartPlot(best_tree_model)
+```
+
+
+Its confusion matrices with respect to training & test dataset are below. It successfully classifies the target values near 99%. Thus, it is the best model explaining this problem so far. 
+
+```{r dt v5, message=FALSE, warning=FALSE}
+predictions_model <- predict(best_tree_model, newdata = dt_train, type = "class")
+cm_train <- confusionMatrix(predictions_model, dt_train$Diabetes_binary, positive="0")
+cm_train
+
+predictions_model.test <- predict(best_tree_model, newdata = dt_test, type = "class")
+cm_test <- confusionMatrix(predictions_model.test, dt_test$Diabetes_binary, positive="0")
+cm_test
+```
+
+Finally, we can look its ROC curve and AUC score 
+
+```{r dt v6, message=FALSE, warning=FALSE}
+p1 <- predict(best_tree_model, dt_test, type = 'prob')[,2]
+r <- multiclass.roc(dt_test$Diabetes_binary, p1, percent = TRUE)
+roc <- r[['rocs']]
+r1 <- roc[[1]]
+plot.roc(r1,
+         print.auc=TRUE,
+         auc.polygon=TRUE,
+         grid=c(0.1, 0.2),
+         grid.col=c("green", "red"),
+         max.auc.polygon=TRUE,
+         auc.polygon.col="lightblue",
+         print.thres=TRUE,
+         main= 'ROC Curve')
+
+```
+
+### Part 1.5  : Random Forest Algorithm
+
+Let's move with the third one which is the Random Forest (RF) algorithm. 
+
+First, arranging the dataset in order not to mutate original one, we copy from it. 
+
+```{r rf v1, message=FALSE, warning=FALSE}
+# Copying the main dataset
+diabetes_data_rf <- data.table(diabetes_data)
+
+head(diabetes_data_rf)
+dim(diabetes_data_rf)
+```
+
+```{r rf v2, message=FALSE, warning=FALSE}
+diabetes_data_rf <- na.omit(diabetes_data_rf)
+validationIndex <- createDataPartition(diabetes_data_rf$Diabetes_binary, p=0.70, list=FALSE)
+
+rf_train <- diabetes_data_rf[validationIndex,] # 70% of data to training
+rf_test <- diabetes_data_rf[-validationIndex,] 
+
+cat("Dimension of the main dataset:",dim(diabetes_data_rf))
+cat("Dimension of the train dataset:",dim(rf_train))
+cat("Dimension of the test dataset:",dim(rf_test))
+```
+
+Dataset is ready to be learned and now we are going to implement a manual cross validation to tune the hyperparameters for the random forest and we are going to look at its error value in each iteration. 
+
+Assuming the tuning hyperparameter will be only the effect of the ratio of the number of features evaluated at each split (mtry) and setting other parameters as J=500 and the minimal number of observations
+per tree leaf=5.
+
+In the end, we are going to store them in table to find the best model. 
+
+```{r rf v3, message=FALSE, warning=FALSE}
+set.seed(50)
+# Set the number of trees and nodesize
+num_trees <- 500
+min_obs_per_leaf <- 5
+
+# Create a grid of mtry values to explore
+mtry_values <- c(2, 4, 6, 8, 10, 15, 20)  # Add more values as needed
+
+# Create an empty data frame to store results
+rf_results <- data.frame(mtry = numeric(0), error_rate = numeric(0))
+
+# Perform grid search
+for (m in mtry_values) {
+  # Train the Random Forest model
+  rf_model <- randomForest(Diabetes_binary ~ ., data = rf_train, 
+                           ntree = num_trees, nodesize = min_obs_per_leaf, mtry = m)
+  
+  # Make predictions on the training set
+  predictions <- predict(rf_model, dt_train)
+  
+  # Calculate the error rate (you may want to use a more appropriate metric)
+  error_rate <- mean(predictions != rf_train$Diabetes_binary)
+  
+  # Store the results
+  rf_results <- rbind(rf_results, data.frame(mtry = m, error_rate = error_rate))
+}
+
+# Print the results
+print(rf_results)
+
+# Create a line plot
+ggplot(rf_results, aes(x = mtry, y = error_rate)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Error Rate vs. mtry",
+       x = "mtry",
+       y = "Error Rate") +
+  theme_minimal()
+```
+
+Looks like the model with `mtry` = 2 (given `ntree` = 500 & `nodesize` = 5) is the best model in terms of error rate, lets also analyze confusion matrix.
+
+```{r rf v4, message=FALSE, warning=FALSE}
+best_rf_model <- randomForest(Diabetes_binary ~ ., data = rf_train, 
+                              ntree = num_trees, nodesize = min_obs_per_leaf, mtry = 2)
+
+# Make predictions on the train set
+rf_predictions.train <- predict(best_rf_model, newdata = rf_train)
+
+# Create the confusion matrix
+rf_confusion_matrix.train <- confusionMatrix(rf_predictions.train, rf_train$Diabetes_binary)
+
+# Print the confusion matrix
+print(rf_confusion_matrix.train)
+
+# Make predictions on the test set
+rf_predictions.test <- predict(best_rf_model, newdata = rf_test)
+
+# Create the confusion matrix
+rf_confusion_matrix.test <- confusionMatrix(rf_predictions.test, rf_test$Diabetes_binary)
+
+# Print the confusion matrix
+print(rf_confusion_matrix.test)
+```
+
+Its confusion matrices with respect to training & test dataset are above It classifies the target values near 85% but it has some difficulties while classifying the positive ('1') classes.
+
+Finally, let's look at the variable importance and the partial dependence plots. VarImp plot basically shows which feature has the most contribution to the model while it is improving (making purer). Partial Dependence plot is the plot showing the effect of selected feature to the predictions.
+
+```{r rf v5, message=FALSE, warning=FALSE}
+# Plot variable importance
+varImpPlot(best_rf_model)
+
+# Create partial dependence plot
+partial_plot <- partial(best_rf_model, pred.var = 'BMI', data = dt_test)
+
+# Plot the partial dependence plot
+plot(partial_plot)
+```
+
+### Part 1.6  : GBM Algorithm 
+
+Let's move with the third one which is the Gradient Boosting Machine (GBM) algorithm. 
+
+First, arranging the dataset in order not to mutate original one, we copy from it. 
+
+```{r gbm v1, message=FALSE, warning=FALSE}
+# Copying the main dataset
+diabetes_data_gbm <- data.table(diabetes_data)
+# Making the target value numeric to use in gbm
+diabetes_data_gbm$Diabetes_binary <- as.numeric(diabetes_data_gbm$Diabetes_binary)
+diabetes_data_gbm <- transform(diabetes_data_gbm, Diabetes_binary=Diabetes_binary-1)
+
+head(diabetes_data_gbm)
+dim(diabetes_data_gbm)
+```
+
+```{r gbm v2, message=FALSE, warning=FALSE}
+# Remove rows with any NA values
+diabetes_data_gbm <- na.omit(diabetes_data_gbm)
+validationIndex <- createDataPartition(diabetes_data_gbm$Diabetes_binary, p=0.70, list=FALSE)
+
+gbm_train <- diabetes_data_gbm[validationIndex,] # 70% of data to training
+gbm_test <- diabetes_data_gbm[-validationIndex,] 
+
+# To use in cross validation I have replace "0" with "no" else "yes"
+gbm_train_revised <- gbm_train
+gbm_test_revised <- gbm_test 
+
+gbm_train_revised$Diabetes_binary <- ifelse(gbm_train_revised$Diabetes_binary == "0", "no", "yes")
+gbm_train_revised$Diabetes_binary <- as.factor(gbm_train_revised$Diabetes_binary )
+
+gbm_test_revised$Diabetes_binary <- ifelse(gbm_test_revised$Diabetes_binary == "0", "no", "yes")
+gbm_test_revised$Diabetes_binary <- as.factor(gbm_test_revised$Diabetes_binary )
+
+cat("Dimension of the main dataset:",dim(diabetes_data_gbm))
+cat("Dimension of the train dataset:",dim(gbm_train))
+cat("Dimension of the test dataset:",dim(gbm_test))
+```
+
+In above, there are 2 train & test pairs occur. One will be used in the cross validation setting with replaced values "no" and "yes" and the other will be used to test the best model with tuned parameters.
+
+Let's tune the hyperparameters of the GBM with respect to the "ROC" value".
+
+We are mainly interested in tuning the depth (interaction.depth), the number of
+trees (n.trees) and the learning rate (shrinkage). Also, I have took a help from the lecture notes in this part.
+
+```{r gbm v3, message=FALSE, warning=FALSE}
+set.seed(10)
+
+n_repeats=5
+n_folds=10
+
+fitControl=trainControl(method = "repeatedcv",
+                        number = n_folds,
+                        repeats = n_repeats,
+                        classProbs=TRUE, summaryFunction=twoClassSummary)
+## gradient boosting
+gbmGrid=expand.grid(interaction.depth = c(3, 5), 
+                    n.trees = c(1:5)*100, 
+                    shrinkage = c(0.05,0.1),
+                    n.minobsinnode = 10)
+set.seed(1)                        
+gbm_fit=train(Diabetes_binary ~ ., data = gbm_train_revised, 
+              method = "gbm", 
+              trControl = fitControl, metric='ROC',
+              tuneGrid = gbmGrid,
+              verbose=F) #verbose is an argument from gbm, prints to screen
+gbm_fit
+
+plot(gbm_fit)
+```
+
+Selecting the best model is below: 
+```{r gbm v4, message=FALSE, warning=FALSE}
+# select the best model
+selected_gbm=tolerance(gbm_fit$results, metric = "ROC", tol = 2, maximize = TRUE)  
+gbm_fit$results[selected_gbm,]
+```
+Looks like the best GBM model with the parameters (Shrinkage = 0.05, depth = 3, n.trees = 100).
+
+Let's analyze this model with test data finally.
+
+```{r gbm v5, message=FALSE, warning=FALSE}
+noftrees=100
+depth=3
+learning_rate=0.05
+
+boosting_model=gbm(Diabetes_binary~., data=gbm_train,distribution = 'bernoulli', n.trees = noftrees,
+                   interaction.depth = depth, n.minobsinnode = 10, shrinkage =learning_rate, cv.folds = 10)
+
+summary(boosting_model)
+
+gbm.perf(boosting_model, method = "cv")
+
+prediction.train <- predict(boosting_model, newdata = gbm_train, type = "response")
+
+confusion_data.train <- data.frame(actual = gbm_train$Diabetes_binary,
+                             predicted = ifelse(prediction.train > 0.5,1,0))  # Assuming a threshold of 0.5 for binary classification
+
+# Create a confusion matrix
+conf_matrix.train <- confusionMatrix(as.factor(confusion_data.train$predicted), as.factor(confusion_data.train$actual))
+
+print(conf_matrix.train)
+```
+
+Also analyzing with the test data: 
+
+```{r gbm v6, message=FALSE, warning=FALSE}
+prediction.test <- predict(boosting_model, newdata = gbm_test, type = "response")
+
+confusion_data.test <- data.frame(actual = gbm_test$Diabetes_binary,
+                             predicted = ifelse(prediction.test > 0.5,1,0))  # Assuming a threshold of 0.5 for binary classification
+
+# Create a confusion matrix
+conf_matrix.test <- confusionMatrix(as.factor(confusion_data.test$predicted), as.factor(confusion_data.test$actual))
+
+print(conf_matrix.test)
+```
+
+Results are not bad but not sufficient to explain problem yet. 
+
+Conclusion : We have worked on a dataset about the diagnosis of the diabetes and implemented 4 different learning algorithms with different hyperparameters. We concluded that the Decision Tree with `minbucket` = 1 is the algorithm that can explain or classifies the problem most well. 
+
+Comments:
+
+kNN was the fastest algorithm to learn but it is not sufficient to identify diagnosis of the disease
+RandomForest and GBM has similar result metrics, but they took long time to be learned, especially GBM 
+DT had the least cv, test errors. It can almost explain the whole test dataset, but it learned complex model. It might have difficulties with further non-seen datasets. 
+
+Let's move on with the second dataset which is about the classification of the students' success.
+
+## Students Success Case
+### Part 2.0  : Explaining the Students Success Case and loading the data.
+
+A dataset created from a higher education institution (acquired from several disjoint databases) related to students enrolled in different undergraduate degrees, such as agronomy, design, education, nursing, journalism, management, social service, and technologies. The dataset includes information known at the time of student enrollment (academic path, demographics, and social-economic factors) and the students' academic performance at the end of the first and second semesters. The data is used to build classification models to predict students' dropout and academic success. The problem is formulated as a three category classification task, in which there is a strong imbalance towards one of the classes.
+
+It will be seen that data is an imbalanced, multiclass classification problem. It will be analyzed below with different techniques.
+
+In this part of the assignment, we mainly try to classify the student successes. Let's start by loading the data to the environment.
+
+```{r load the data 2, message=FALSE, warning=FALSE}
+students_data_path <- paste0(data_path,"StudentSuccess/students.csv")
+
+students_data <- read.csv(students_data_path, header = TRUE, sep = ";", quote = "\"")
+
+head(students_data)
+```
+
+### Part 2.1  : Data Analysis & Exploring Data & Preprocessing
+
+All features are either number or integer except the target variable which is factor. It is a good sign since we do not need to encode chr or factor features. Also, there is no anomaly values from the analysis of the data. Let's move on with the further analysis.
+
+```{r data analysis 2, message=FALSE, warning=FALSE}
+dim(students_data)
+
+str(students_data)
+
+summary(students_data)
+```
+
+Analyzing the data whether it has null values. If it has, then we need to handle the missing values.
+
+```{r data analysis v2 2, message=FALSE, warning=FALSE}
+colSums(sapply(students_data, is.na))
+
+skim(students_data)
+```
+
+Can be seen in the data, there is no missing values, which is a good sign for us. First, we need to factorize the target value `Target`. Then, we also need to get rid of the duplicate values. 
+
+```{r data analysis v3 2, message=FALSE, warning=FALSE}
+students_data$Target <- as.factor(students_data$Target)
+
+students_data <- students_data[!duplicated(students_data), ]
+```
+
+We are ready to move on. Let's make some visualizations to understand data more. It can be seen that There is an imbalance in the class (target) variable between `Graduate` and `Enrolled`.
+```{r data analysis v4 2, message=FALSE, warning=FALSE}
+ggplot(students_data, aes(x = Target )) +
+  geom_bar(stat = "count") +
+  labs(title = "Count of Student Success", x = "Student Success", y = "Count")
+
+ggcorr(students_data,
+       method = c("pairwise"),
+       nbreaks = 6,
+       hjust = 0.8,
+       label = TRUE,
+       label_size = 3,
+       color = "grey20")
+```
+
+### Part 2.2  : Train & Test Split for Modeling (Scaled Split)
+
+In order to train the model and then the test its performance, we need to split the data as training and test datasets. Before hand, we also need to scale the features (except the target feature) while using the K-Nearest-Neighbor algorithm since it is highly affected from feature's scale. 
+
+In order not to mutate the main dataset, we'll copy it and then make the scale and split operation. 
+```{r scaling and data split 2, message=FALSE, warning=FALSE}
+scaled_students_data <- students_data
+scaled_students_data[,-37] <- scale(scaled_students_data[,-37])
+
+validationIndex <- createDataPartition(scaled_students_data$Target, p=0.70, list=FALSE)
+
+knn_train <- scaled_students_data[validationIndex,] # 70% of data to training
+knn_test <- scaled_students_data[-validationIndex,] 
+
+
+cat("Dimension of the main dataset:",dim(scaled_students_data))
+cat("Dimension of the train dataset:",dim(knn_train))
+cat("Dimension of the test dataset:",dim(knn_test))
+```
+
+Dataset is scaled, has no missing and duplicated values. It is ready to be used in algorithms.
+
+### Part 2.3  : kNN Algorithm (k-Nearest Neighbor)
+
+Let's start with the kNN algorithm. The algorithm is based on the idea that similar data points tend to be close to each other in the feature space. In other words, the class or value of an unknown data point can be predicted by examining its k-nearest neighbors.
+
+There are two parameters to consider: the distance measure and the number of neighbors. We are mainly interested in two distance measures in this assignment: Euclidean and Manhattan Distance.  
+
+Let's do the Cross Validation to find the optimal k (# of nearest neighbor): 
+```{r knn v1 2, message=FALSE, warning=FALSE}
+# 10-fold Cross Validation
+trainControl <- trainControl(method="repeatedcv", number=10, repeats=5)
+metric <- "Accuracy"
+set.seed(8)
+
+# kNN Part
+fit.knn <- train(Target~., data=knn_train, method="knn",
+                 metric=metric ,trControl=trainControl)
+knn.optimal.k <- fit.knn$bestTune # keep this Initial k for testing with knn() function in next section
+
+print(fit.knn)
+
+plot(fit.knn)
+```
+
+Accuracy was used to select the optimal model using the largest value.
+After the report of the CV and the plot shows that the final value used for the model was k = 9 and it is the optimum k value for the model.
+
+Confusion matrix for k = 9 is as follows: 
+```{r knn v2 2, message=FALSE, warning=FALSE}
+prediction <- predict(fit.knn, newdata = knn_test)
+cm_knn <- confusionMatrix(prediction, knn_test$Target)
+print(cm_knn)
+```
+
+Let's do the analysis for different types of k such as the floor of square root of the dataset size (row)
+
+```{r knn v3 2, message=FALSE, warning=FALSE}
+initial_k <- sqrt(NROW(scaled_students_data))
+initial_k
+
+knn.floor <- knn(train=knn_train[,-37], test=knn_test[,-37], 
+                 cl=knn_train$Target, k=floor(initial_k))
+
+# use confusion matrix to calculate accuracy
+cm.floor <- confusionMatrix(knn_test$Target,knn.floor)
+cm.floor
+```
+
+Its accuracy is similar (relatively lower) but it is misleading since model was not able to identify the Enrolled and Dropout well.
+
+Finally, lets also look at the model with Manhattan distance using `kknn` library.
+```{r knn v4 2, message=FALSE, warning=FALSE}
+knn.manhattan <- train.kknn(Target ~ ., data = knn_train, ks = 9, scale = TRUE, distance = 1)
+predictions.manhattan <- predict(knn.manhattan, newdata = knn_test)
+
+cm.manhattan <- table(predictions.manhattan, knn_test$Target)
+print(cm.manhattan)
+accuracy.manhattan <- sum(diag(cm.manhattan)) / sum(cm.manhattan)
+print(paste("Accuracy for kNN with Manhattan Distance:", round(accuracy.manhattan,2)))
+```
+
+Performance of the `Manhattan kNN` is a little better than the `Euclidean kNN`. Even the accuracy is similar, classification of negative cases like droput and enrolled are better. Manhattan Distance is a Minkovski Distance with r = 1 and it looks like fit well in this dataset. 
+
+Thus, we decided that the best model that explains this dataset is the kNN with `k = 9 & distance = Manhattan`.
+
+
+### Part 2.4  : Decision Tree Algorithm 
+
+Let's move with the second one which is the Decision Tree (DT) algorithm. 
+
+First, arranging the dataset in order not to mutate original one, we copy from it. 
+
+```{r dt v1 2, message=FALSE, warning=FALSE}
+# Copying the main dataset
+students_data_dt <- data.table(students_data)
+
+head(students_data_dt)
+dim(students_data_dt)
+```
+
+```{r dt v2 2, message=FALSE, warning=FALSE}
+# Remove rows with any NA values
+students_data_dt <- na.omit(students_data_dt)
+validationIndex <- createDataPartition(students_data_dt$Target, p=0.70, list=FALSE)
+
+dt_train <- students_data_dt[validationIndex,] # 70% of data to training
+dt_test <- students_data_dt[-validationIndex,] 
+
+cat("Dimension of the main dataset:",dim(students_data_dt))
+cat("Dimension of the train dataset:",dim(dt_train))
+cat("Dimension of the test dataset:",dim(dt_test))
+```
+
+Dataset is ready to be learned and now we are going to implement a manual cross validation to tune the hyperparameters for the decision tree and we are going to look at its Accuracy value in each iteration. 
+
+Assuming the tuning hyperparameter will be only the minimal number of observations per tree leaf. Setting complexity parameter to zero and minimum number of observations to split as the twice as the minimal number
+of observations per tree leaf.
+
+In the end, we are going to store them in df to find the best model. 
+
+```{r dt v3 2, message=FALSE, warning=FALSE}
+# Create a data frame to store cross-validation results
+cv_results <- data.frame(minbucket = numeric(), accuracy = numeric())
+
+set.seed(10)
+
+# Define a range of minsplit values to try
+minbucket_values <- c(1, 5, 10, 15, 20) 
+
+# Perform cross-validation for each minbucket value
+for (minbucket_val in minbucket_values) {
+  # Create a decision tree model with the current minbucket value
+  tree_model <- rpart(Target~.,dt_train,method='class',
+                      control=rpart.control(cp=0, minbucket = minbucket_val, minsplit = 2*minbucket_val))
+  
+  predictions <- predict(tree_model, newdata = dt_train, type = "class")
+  correct_predictions <- sum(predictions == dt_train$Target)
+  # Calculate accuracy
+  accuracy <- round(correct_predictions / nrow(dt_train),5)
+  
+  # Store the results in the data frame
+  cv_results <- rbind(cv_results, data.frame(minbucket = minbucket_val, accuracy = accuracy))
+}
+
+# Print the cross-validation results
+print(cv_results)
+```
+
+Best accuracy belongs to the `minbucket` = 1 but this model poorly performs in the test dataset (complex model). It seems that overfitting occurs. On the other hand, `minbucket` = 10 performs well both in training and test dataset.
+Looks like the model with `minbucket` = 10 is the best model in terms of ROC, lets also analyze its ROC, AUC and confusion matrix.
+
+```{r dt v4 2, message=FALSE, warning=FALSE}
+minbucket_val <- 10
+best_tree_model <- rpart(Target~.,dt_train,method='class',
+                         control=rpart.control(cp=0, minbucket = minbucket_val, minsplit = 2*minbucket_val))
+
+fancyRpartPlot(best_tree_model)
+```
+
+
+Its confusion matrices with respect to training & test dataset are below. It successfully classifies the target values near 75%.
+
+```{r dt v5 2, message=FALSE, warning=FALSE}
+predictions_model <- predict(best_tree_model, newdata = dt_train, type = "class")
+cm_train <- confusionMatrix(predictions_model, dt_train$Target)
+cm_train
+predictions_model.test <- predict(best_tree_model, newdata = dt_test, type = "class")
+cm_test <- confusionMatrix(predictions_model.test, dt_test$Target)
+cm_test
+```
+
+Finally, we can look its ROC curve and AUC score 
+
+```{r dt v6 2, message=FALSE, warning=FALSE}
+p1 <- predict(best_tree_model, dt_test, type = 'prob')
+p1 <- p1[,2]
+r <- multiclass.roc(dt_test$Target, p1, percent = TRUE)
+roc <- r[['rocs']]
+r1 <- roc[[1]]
+plot.roc(r1,
+         print.auc=TRUE,
+         auc.polygon=TRUE,
+         grid=c(0.1, 0.2),
+         grid.col=c("green", "red"),
+         max.auc.polygon=TRUE,
+         auc.polygon.col="lightblue",
+         print.thres=TRUE,
+         main= 'ROC Curve')
+```
+
+### Part 2.5  : Random Forest Algorithm 
+
+Let's move with the third one which is the Random Forest (RF) algorithm. 
+
+First, arranging the dataset in order not to mutate original one, we copy from it. 
+
+```{r rf v1 2, message=FALSE, warning=FALSE}
+# Copying the main dataset
+students_data_rf <- data.table(students_data)
+
+head(students_data_rf)
+dim(students_data_rf)
+```
+
+```{r rf v2 2, message=FALSE, warning=FALSE}
+students_data_rf <- na.omit(students_data_rf)
+validationIndex <- createDataPartition(students_data_rf$Target, p=0.70, list=FALSE)
+
+rf_train <- students_data_rf[validationIndex,] # 70% of data to training
+rf_test <- students_data_rf[-validationIndex,] 
+
+cat("Dimension of the main dataset:",dim(students_data_rf))
+cat("Dimension of the train dataset:",dim(rf_train))
+cat("Dimension of the test dataset:",dim(rf_test))
+```
+
+Dataset is ready to be learned and now we are going to implement a manual cross validation to tune the hyperparameters for the random forest and we are going to look at its error value in each iteration. 
+
+Assuming the tuning hyperparameter will be only the effect of the ratio of the number of features evaluated at each split (mtry) and setting other parameters as J=500 and the minimal number of observations
+per tree leaf=5.
+
+In the end, we are going to store them in table to find the best model. 
+
+```{r rf v3 2, message=FALSE, warning=FALSE}
+set.seed(50)
+# CV RF
+
+# Set the number of trees and nodesize
+num_trees <- 500
+min_obs_per_leaf <- 5
+
+# Create a grid of mtry values to explore
+mtry_values <- c(2, 4, 6, 8, 10, 15, 20)  # Add more values as needed
+
+# Create an empty data frame to store results
+rf_results <- data.frame(mtry = numeric(0), error_rate = numeric(0))
+
+# Perform grid search
+for (m in mtry_values) {
+  # Train the Random Forest model
+  rf_model <- randomForest(Target ~ ., data = rf_train, 
+                           ntree = num_trees, nodesize = min_obs_per_leaf, mtry = m)
+  
+  # Make predictions on the training set
+  predictions <- predict(rf_model, dt_train)
+  
+  # Calculate the error rate (you may want to use a more appropriate metric)
+  error_rate <- mean(predictions != rf_train$Target)
+  
+  # Store the results
+  rf_results <- rbind(rf_results, data.frame(mtry = m, error_rate = error_rate))
+}
+
+# Print the results
+print(rf_results)
+
+# Create a line plot
+ggplot(rf_results, aes(x = mtry, y = error_rate)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Error Rate vs. mtry",
+       x = "mtry",
+       y = "Error Rate") +
+  theme_minimal()
+```
+
+Looks like the model with `mtry` = 2 (given `ntree` = 500 & `nodesize` = 5) is the best model in terms of error rate, lets also analyze confusion matrix.
+
+```{r rf v4 2, message=FALSE, warning=FALSE}
+best_rf_model <- randomForest(Target ~ ., data = rf_train, 
+                              ntree = num_trees, nodesize = min_obs_per_leaf, mtry = 2)
+
+# Make predictions on the train set
+rf_predictions.train <- predict(best_rf_model, newdata = rf_train)
+
+# Create the confusion matrix
+rf_confusion_matrix.train <- confusionMatrix(rf_predictions.train, rf_train$Target)
+
+# Print the confusion matrix
+print(rf_confusion_matrix.train)
+
+# Make predictions on the test set
+rf_predictions.test <- predict(best_rf_model, newdata = rf_test)
+
+# Create the confusion matrix
+rf_confusion_matrix.test <- confusionMatrix(rf_predictions.test, rf_test$Target)
+
+# Print the confusion matrix
+print(rf_confusion_matrix.test)
+```
+
+Its confusion matrices with respect to training & test dataset are above It classifies the target values near 92% with the training dataset. However, it has some difficulties with new dataset as expected.
+
+Finally, let's look at the variable importance and the partial dependence plots. VarImp plot basically shows which feature has the most contribution to the model while it is improving (making purer). Partial Dependence plot is the plot showing the effect of selected feature to the predictions.
+
+```{r rf v5 2, message=FALSE, warning=FALSE}
+# Plot variable importance
+varImpPlot(best_rf_model)
+
+# Create partial dependence plot
+partial_plot <- partial(best_rf_model, pred.var = 'Curricular.units.2nd.sem..approved.', data = dt_test)
+
+# Plot the partial dependence plot
+plot(partial_plot)
+```
+
+### Part 2.6  : GBM Algorithm 
+
+Let's move with the third one which is the Gradient Boosting Machine (GBM) algorithm. 
+
+First, arranging the dataset in order not to mutate original one, we copy from it. 
+
+```{r gbm v1 2, message=FALSE, warning=FALSE}
+students_data_gbm <- data.table(students_data)
+
+head(students_data_gbm)
+dim(students_data_gbm)
+```
+
+```{r gbm v2 2, message=FALSE, warning=FALSE}
+# Remove rows with any NA values
+students_data_gbm <- na.omit(students_data_gbm)
+validationIndex <- createDataPartition(students_data_gbm$Target, p=0.70, list=FALSE)
+
+gbm_train <- students_data_gbm[validationIndex,] # 70% of data to training
+gbm_test <- students_data_gbm[-validationIndex,]
+
+cat("Dimension of the main dataset:",dim(students_data_gbm))
+cat("Dimension of the train dataset:",dim(gbm_train))
+cat("Dimension of the test dataset:",dim(gbm_test))
+```
+
+In above, there are 2 train & test pairs occur. One will be used in the cross validation and the other will be used to test the best model with tuned parameters.
+
+Let's tune the hyperparameters of the GBM with respect to the "AUC" value.
+
+We are mainly interested in tuning the depth (interaction.depth), the number of
+trees (n.trees) and the learning rate (shrinkage). Also, I have took a help from the lecture notes in this part.
+
+Since it is a multiclass-classification problem, we are going to use the multiClassSummary as the summaryFunction in trainControl and search as GridSearch. 
+
+```{r gbm v3 2, message=FALSE, warning=FALSE}
+set.seed(10)
+
+
+n_folds=10
+
+fitControl=trainControl(method = "cv",
+                        number = n_folds,
+                        classProbs=TRUE,
+                        search = "grid",
+                        summaryFunction = multiClassSummary)
+## gradient boosting
+gbmGrid=expand.grid(interaction.depth = c(3, 5), 
+                    n.trees = c(1:5)*100, 
+                    shrinkage = c(0.05,0.1),
+                    n.minobsinnode = 10)
+set.seed(1)                        
+gbm_fit=train(Target ~ ., data = gbm_train, 
+              method = "gbm", 
+              trControl = fitControl, metric='AUC',
+              tuneGrid = gbmGrid,
+              verbose=F) #verbose is an argument from gbm, prints to screen
+gbm_fit
+
+
+plot(gbm_fit)
+```
+
+Selecting the best model is below: 
+```{r gbm v4 2, message=FALSE, warning=FALSE}
+# select the best model
+selected_gbm=tolerance(gbm_fit$results, metric = "AUC", tol = 2, maximize = TRUE)  
+gbm_fit$results[selected_gbm,]
+```
+Looks like the best GBM model with the parameters (Shrinkage = 0.05, depth = 3, n.trees = 100).
+
+Let's analyze this model with test data finally.
+
+```{r gbm v5 2, message=FALSE, warning=FALSE}
+noftrees=200
+depth=5
+learning_rate=0.05
+
+boosting_model=gbm(Target~., data=gbm_train,distribution = 'multinomial', n.trees = noftrees,
+                   interaction.depth = depth, n.minobsinnode = 10, shrinkage =learning_rate, cv.folds = 10)
+
+summary(boosting_model)
+
+gbm.perf(boosting_model, method = "cv")
+
+prediction.train <- predict(boosting_model, newdata = gbm_train, type = "response")
+
+
+predicted_classes <- apply(prediction.train, 1, which.max)
+
+
+# Create a confusion matrix
+conf_matrix <- table(gbm_train$Target, predicted_classes)
+
+# Print the confusion matrix
+print(conf_matrix)
+
+```
+
+Also analyzing with the test data: 
+
+```{r gbm v6 2, message=FALSE, warning=FALSE}
+prediction.test <- predict(boosting_model, newdata = gbm_test, type = "response")
+
+
+predicted_classes <- apply(prediction.test, 1, which.max)
+
+
+# Create a confusion matrix
+conf_matrix <- table(gbm_test$Target, predicted_classes)
+
+# Print the confusion matrix
+print(conf_matrix)
+
+# Calculate accuracy
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+
+# Print the accuracy
+print(accuracy)
+```
+
+Results are quite good in this sample. Especially, identifying multiple classes is kind of difficult issue to solve and iteratively improving weak learners and obtaining strong learner is the best way to solve this specific problem.
+
+Conclusion : We have worked on a dataset about the diagnosis of the student successes and implemented 4 different learning algorithms with different hyperparameters. We concluded that the Gradient Boosting Machines (GBM) with `(Shrinkage = 0.05, depth = 5, n.trees = 200)` is the algorithm that can explain or classifies the problem most well. Alternatively, randomForest algorithm can be used.
+
+GBM is better to identify the negative cases well, but randomForest cv error and accuracy is better than GBM. Also, the time complexity is much higher in GBM. Depending on the requirements or aim, any algortihm can be chosen.
+
+Let's move on with the third dataset which is about the classification of the malware effectiveness.
+
+
+## Malware Type Detection Case
+### Part 3.0  : Explaining the Malware Case and loading the data.
+
+TUNADROMD dataset contains 4465 instances and 241 attributes. The target attribute for classification is a category (malware vs good ware). (N.B. This is the preprocessed version of TUANDROMD). Purpose is to support malware research and validation of the effectiveness of malware detection methods
+
+This dataset has a large (> 100 features) dimension and it will be costly in any algorithms than the smaller datasets as expected. PCA and MDS can be also used to reduce dimension.
+
+In this part of the assignment, we mainly try to classify the student successes. Let's start by loading the data to the environment.
+
+```{r load the data 3, message=FALSE, warning=FALSE}
+malware_data_path <- paste0(data_path,"Malware/malware.csv")
+
+malware_data <- read.csv(malware_data_path)
+```
+
+### Part 3.1  : Data Analysis & Exploring Data & Preprocessing
+
+Since there are many features, there might be some features are ignored to be printed in the report.
+
+```{r data analysis 3, message=FALSE, warning=FALSE}
+dim(malware_data)
+
+str(malware_data)
+```
+
+Analyzing the data whether it has null values. If it has, then we need to handle the missing values.
+
+```{r data analysis v2 3, message=FALSE, warning=FALSE}
+sum(colSums(sapply(malware_data, is.na)))
+
+skim(malware_data)
+```
+
+Can be seen in the data, there are missing values. First, we need to factorize the target value `Label`. Then, we also need to get rid of the missing values. 
+
+```{r data analysis v3 3, message=FALSE, warning=FALSE}
+malware_data <- na.omit(malware_data)
+
+malware_data$Label <- as.factor(malware_data$Label)
+```
+
+We are ready to move on. Let's make some visualizations to understand data more. It can be seen that There is an imbalance in the class (target) variable between `0` and `1`.
+```{r data analysis v4 3, message=FALSE, warning=FALSE}
+ggplot(malware_data, aes(x = Label )) +
+  geom_bar(stat = "count") +
+  labs(title = "Count of Malware Type", x = "Malware Label", y = "Count")
+```
+
+### Part 3.2  : Train & Test Split for Modeling (Scaled Split)
+
+In order to train the model and then the test its performance, we need to split the data as training and test datasets. Before hand, we also need to scale the features (except the target feature) while using the K-Nearest-Neighbor algorithm since it is highly affected from feature's scale. 
+
+In order not to mutate the main dataset, we'll copy it and then make the scale and split operation. Also, there are some missing values in some features after scaling, we are going to also remove them from data.
+```{r scaling and data split 3, message=FALSE, warning=FALSE}
+scaled_malware_data <- malware_data
+scaled_malware_data[,-242] <- scale(scaled_malware_data[,-242])
+validationIndex <- createDataPartition(scaled_malware_data$Label, p=0.70, list=FALSE)
+
+knn_train <- scaled_malware_data[validationIndex,] # 70% of data to training
+knn_test <- scaled_malware_data[-validationIndex,] 
+
+sum(colSums(sapply(knn_train, is.na)))
+
+threshold <- 1000
+missing_counts <- colSums(is.na(scaled_malware_data))
+columns_to_drop <- names(missing_counts[missing_counts > threshold])
+scaled_malware_data <- scaled_malware_data[, !(names(scaled_malware_data) %in% columns_to_drop)]
+missing_counts <- colSums(is.na(knn_train))
+columns_to_drop <- names(missing_counts[missing_counts > threshold])
+knn_train <- knn_train[, !(names(knn_train) %in% columns_to_drop)]
+missing_counts <- colSums(is.na(knn_test))
+columns_to_drop <- names(missing_counts[missing_counts > threshold])
+knn_test <- knn_test[, !(names(knn_test) %in% columns_to_drop)]
+
+sum(colSums(sapply(knn_train, is.na)))
+
+cat("Dimension of the main dataset:",dim(scaled_malware_data))
+cat("Dimension of the train dataset:",dim(knn_train))
+cat("Dimension of the test dataset:",dim(knn_test))
+```
+
+Dataset is scaled, has no missing and duplicated values. It is ready to be used in algorithms.
+
+### Part 3.3  : kNN Algorithm (k-Nearest Neighbor)
+
+Let's start with the kNN algorithm. The algorithm is based on the idea that similar data points tend to be close to each other in the feature space. In other words, the class or value of an unknown data point can be predicted by examining its k-nearest neighbors.
+
+There are two parameters to consider: the distance measure and the number of neighbors. We are mainly interested in two distance measures in this assignment: Euclidean and Manhattan Distance.  
+
+Let's do the Cross Validation to find the optimal k (# of nearest neighbor): 
+```{r knn v1 3, message=FALSE, warning=FALSE}
+# knn CV
+trainControl <- trainControl(method="repeatedcv", number=10, repeats=5)
+metric <- "Accuracy"
+set.seed(8)
+
+# kNN Part
+fit.knn <- train(Label~., data=knn_train, method="knn",
+                 metric=metric ,trControl=trainControl)
+knn.optimal.k <- fit.knn$bestTune # keep this Initial k for testing with knn() function in next section
+
+print(fit.knn)
+
+plot(fit.knn)
+```
+
+Accuracy was used to select the optimal model using the largest value.
+After the report of the CV and the plot shows that the final value used for the model was k = 5 and it is the optimum k value for the model.
+
+Confusion matrix for k = 5 is as follows: 
+```{r knn v2 3, message=FALSE, warning=FALSE}
+prediction <- predict(fit.knn, newdata = knn_test)
+cm_knn <- confusionMatrix(prediction, knn_test$Label)
+print(cm_knn)
+```
+
+Let's do the analysis for different types of k such as the floor of square root of the dataset size (row)
+
+```{r knn v3 3, message=FALSE, warning=FALSE}
+initial_k <- sqrt(NROW(scaled_malware_data))
+initial_k
+
+knn.floor <- knn(train=knn_train[,-200], test=knn_test[,-200], 
+                 cl=knn_train$Label, k=floor(initial_k))
+
+# use confusion matrix to calculate accuracy
+cm.floor <- confusionMatrix(knn_test$Label,knn.floor)
+cm.floor
+```
+
+Its accuracy is similar (relatively lower) but it is misleading since model was not able to identify the "0" labels.
+
+Finally, lets also look at the model with Manhattan distance using `kknn` library.
+```{r knn v4 3, message=FALSE, warning=FALSE}
+knn.manhattan <- train.kknn(Label ~ ., data = knn_train, ks = 5, scale = TRUE, distance = 1)
+predictions.manhattan <- predict(knn.manhattan, newdata = knn_test)
+
+cm.manhattan <- table(predictions.manhattan, knn_test$Label)
+print(cm.manhattan)
+accuracy.manhattan <- sum(diag(cm.manhattan)) / sum(cm.manhattan)
+print(paste("Accuracy for kNN with Manhattan Distance:", round(accuracy.manhattan,5)))
+```
+
+Performance of the `Manhattan kNN` is a little worse than the `Euclidean kNN`.
+Thus, we decided that the best model that explains this dataset is the kNN with `k = 5 & distance = Euclidean`.
+
+
+### Part 3.4  : Decision Tree Algorithm 
+
+Let's move with the second one which is the Decision Tree (DT) algorithm. 
+
+First, arranging the dataset in order not to mutate original one, we copy from it. 
+
+```{r dt v1 3, message=FALSE, warning=FALSE}
+# Copying the main dataset
+malware_data_dt <- data.table(malware_data)
+
+dim(malware_data_dt)
+```
+
+```{r dt v2 3, message=FALSE, warning=FALSE}
+# Remove rows with any NA values
+malware_data_dt <- na.omit(malware_data_dt)
+validationIndex <- createDataPartition(malware_data_dt$Label, p=0.70, list=FALSE)
+
+dt_train <- malware_data_dt[validationIndex,] # 70% of data to training
+dt_test <- malware_data_dt[-validationIndex,] 
+
+cat("Dimension of the main dataset:",dim(malware_data_dt))
+cat("Dimension of the train dataset:",dim(dt_train))
+cat("Dimension of the test dataset:",dim(dt_test))
+```
+
+Dataset is ready to be learned and now we are going to implement a manual cross validation to tune the hyperparameters for the decision tree and we are going to look at its Accuracy value in each iteration. 
+
+Assuming the tuning hyperparameter will be only the minimal number of observations per tree leaf. Setting complexity parameter to zero and minimum number of observations to split as the twice as the minimal number
+of observations per tree leaf.
+
+In the end, we are going to store them in df to find the best model. 
+
+```{r dt v3 3, message=FALSE, warning=FALSE}
+# Create a data frame to store cross-validation results
+cv_results <- data.frame(minbucket = numeric(), accuracy = numeric())
+
+set.seed(10)
+
+# Define a range of minsplit values to try
+minbucket_values <- c(1, 5, 10, 15, 20) 
+
+# Perform cross-validation for each minbucket value
+for (minbucket_val in minbucket_values) {
+  # Create a decision tree model with the current minbucket value
+  tree_model <- rpart(Label~.,dt_train,method='class',
+                      control=rpart.control(cp=0, minbucket = minbucket_val, minsplit = 2*minbucket_val))
+  
+  predictions <- predict(tree_model, newdata = dt_train, type = "class")
+  correct_predictions <- sum(predictions == dt_train$Label)
+  # Calculate accuracy
+  accuracy <- round(correct_predictions / nrow(dt_train),5)
+  
+  # Store the results in the data frame
+  cv_results <- rbind(cv_results, data.frame(minbucket = minbucket_val, accuracy = accuracy))
+}
+
+# Print the cross-validation results
+print(cv_results)
+```
+
+Best accuracy belongs to the `minbucket` = 1. Thus, the model with `minbucket` = 1 is the best model in terms of Accuracy, lets also analyze its ROC, AUC and confusion matrix.
+
+```{r dt v4 3, message=FALSE, warning=FALSE}
+minbucket_val <- 1
+best_tree_model <- rpart(Label~.,dt_train,method='class',
+                         control=rpart.control(cp=0, minbucket = minbucket_val, minsplit = 2*minbucket_val))
+
+fancyRpartPlot(best_tree_model)
+```
+
+
+Its confusion matrices with respect to training & test dataset are below. It successfully classifies the target values near 99%.
+
+```{r dt v5 3, message=FALSE, warning=FALSE}
+predictions_model <- predict(best_tree_model, newdata = dt_train, type = "class")
+cm_train <- confusionMatrix(predictions_model, dt_train$Label)
+cm_train
+predictions_model.test <- predict(best_tree_model, newdata = dt_test, type = "class")
+cm_test <- confusionMatrix(predictions_model.test, dt_test$Label)
+cm_test
+```
+
+It is also very successful with the test dataset. Finally, we can look its ROC curve and AUC score 
+
+```{r dt v6 3, message=FALSE, warning=FALSE}
+p1 <- predict(best_tree_model, dt_test, type = 'prob')
+p1 <- p1[,2]
+r <- multiclass.roc(dt_test$Label, p1, percent = TRUE)
+roc <- r[['rocs']]
+r1 <- roc[[1]]
+plot.roc(r1,
+         print.auc=TRUE,
+         auc.polygon=TRUE,
+         grid=c(0.1, 0.2),
+         grid.col=c("green", "red"),
+         max.auc.polygon=TRUE,
+         auc.polygon.col="lightblue",
+         print.thres=TRUE,
+         main= 'ROC Curve')
+```
+
+### Part 3.5  : Random Forest Algorithm 
+
+Let's move with the third one which is the Random Forest (RF) algorithm. 
+
+First, arranging the dataset in order not to mutate original one, we copy from it. 
+
+```{r rf v1 3, message=FALSE, warning=FALSE}
+# Copying the main dataset
+malware_data_rf <- data.table(malware_data)
+
+dim(malware_data_rf)
+```
+
+```{r rf v2 3, message=FALSE, warning=FALSE}
+malware_data_rf <- na.omit(malware_data_rf)
+validationIndex <- createDataPartition(malware_data_rf$Label, p=0.70, list=FALSE)
+
+rf_train <- malware_data_rf[validationIndex,] # 70% of data to training
+rf_test <- malware_data_rf[-validationIndex,] 
+
+cat("Dimension of the main dataset:",dim(malware_data_rf))
+cat("Dimension of the train dataset:",dim(rf_train))
+cat("Dimension of the test dataset:",dim(rf_test))
+```
+
+Dataset is ready to be learned and now we are going to implement a manual cross validation to tune the hyperparameters for the random forest and we are going to look at its error value in each iteration. 
+
+Assuming the tuning hyperparameter will be only the effect of the ratio of the number of features evaluated at each split (mtry) and setting other parameters as J=500 and the minimal number of observations
+per tree leaf=5.
+
+In the end, we are going to store them in table to find the best model. 
+
+```{r rf v3 3, message=FALSE, warning=FALSE}
+set.seed(50)
+# CV RF
+
+# Set the number of trees and nodesize
+num_trees <- 500
+min_obs_per_leaf <- 5
+
+# Create a grid of mtry values to explore
+mtry_values <- c(2, 4, 6, 8, 10, 15, 20)  # Add more values as needed
+
+# Create an empty data frame to store results
+rf_results <- data.frame(mtry = numeric(0), error_rate = numeric(0))
+
+# Perform grid search
+for (m in mtry_values) {
+  # Train the Random Forest model
+  rf_model <- randomForest(Label ~ ., data = rf_train, 
+                           ntree = num_trees, nodesize = min_obs_per_leaf, mtry = m)
+  
+  # Make predictions on the training set
+  predictions <- predict(rf_model, dt_train)
+  
+  # Calculate the error rate (you may want to use a more appropriate metric)
+  error_rate <- mean(predictions != rf_train$Label)
+  
+  # Store the results
+  rf_results <- rbind(rf_results, data.frame(mtry = m, error_rate = error_rate))
+}
+
+# Print the results
+print(rf_results)
+
+# Create a line plot
+ggplot(rf_results, aes(x = mtry, y = error_rate)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Error Rate vs. mtry",
+       x = "mtry",
+       y = "Error Rate") +
+  theme_minimal()
+```
+
+Looks like the model with `mtry` = 10 (given `ntree` = 500 & `nodesize` = 5) is the best model in terms of error rate, lets also analyze confusion matrix.
+
+```{r rf v4 3, message=FALSE, warning=FALSE}
+best_rf_model <- randomForest(Label ~ ., data = rf_train, 
+                              ntree = num_trees, nodesize = min_obs_per_leaf, mtry = 10)
+
+# Make predictions on the train set
+rf_predictions.train <- predict(best_rf_model, newdata = rf_train)
+
+# Create the confusion matrix
+rf_confusion_matrix.train <- confusionMatrix(rf_predictions.train, rf_train$Label)
+
+# Print the confusion matrix
+print(rf_confusion_matrix.train)
+
+# Make predictions on the test set
+rf_predictions.test <- predict(best_rf_model, newdata = rf_test)
+
+# Create the confusion matrix
+rf_confusion_matrix.test <- confusionMatrix(rf_predictions.test, rf_test$Label)
+
+# Print the confusion matrix
+print(rf_confusion_matrix.test)
+```
+
+Its confusion matrices with respect to training & test dataset are above It classifies the target values near 99% wtih the training dataset. Also, it successfully classifies the test dataset.
+
+Finally, let's look at the variable importance and the partial dependence plots. VarImp plot basically shows which feature has the most contribution to the model while it is improving (making purer). Partial Dependence plot is the plot showing the effect of selected feature to the predictions.
+
+```{r rf v5 3, message=FALSE, warning=FALSE}
+# Plot variable importance
+varImpPlot(best_rf_model)
+
+# Create partial dependence plot
+partial_plot <- partial(best_rf_model, pred.var = 'RECEIVE_BOOT_COMPLETED', data = dt_test)
+
+# Plot the partial dependence plot
+plot(partial_plot)
+```
+
+### Part 3.6  : GBM Algorithm 
+
+Let's move with the third one which is the Gradient Boosting Machine (GBM) algorithm. 
+
+First, arranging the dataset in order not to mutate original one, we copy from it. 
+
+```{r gbm v1 3, message=FALSE, warning=FALSE}
+malware_data_gbm <- data.table(malware_data)
+# Making the target value numeric to use in gbm
+malware_data_gbm$Label <- as.numeric(malware_data_gbm$Label)
+malware_data_gbm <- transform(malware_data_gbm, Label=Label-1)
+
+dim(malware_data_gbm)
+```
+
+```{r gbm v2 3, message=FALSE, warning=FALSE}
+# Remove rows with any NA values
+malware_data_gbm <- na.omit(malware_data_gbm)
+validationIndex <- createDataPartition(malware_data_gbm$Label, p=0.70, list=FALSE)
+
+gbm_train <- malware_data_gbm[validationIndex,] # 70% of data to training
+gbm_test <- malware_data_gbm[-validationIndex,] 
+
+# To use in cross validation I have replace "0" with "no" else "yes"
+gbm_train_revised <- gbm_train
+gbm_test_revised <- gbm_test 
+
+gbm_train_revised$Label <- ifelse(gbm_train_revised$Label == "0", "malware", "goodware")
+gbm_train_revised$Label <- as.factor(gbm_train_revised$Label )
+
+gbm_test_revised$Label <- ifelse(gbm_test_revised$Label == "0", "malware", "goodware")
+gbm_test_revised$Label <- as.factor(gbm_test_revised$Label )
+
+cat("Dimension of the main dataset:",dim(malware_data_gbm))
+cat("Dimension of the train dataset:",dim(gbm_train))
+cat("Dimension of the test dataset:",dim(gbm_test))
+```
+
+In above, there are 2 train & test pairs occur. One will be used in the cross validation and the other will be used to test the best model with tuned parameters.
+
+Let's tune the hyperparameters of the GBM with respect to the "AUC" value".
+
+We are mainly interested in tuning the depth (interaction.depth), the number of
+trees (n.trees) and the learning rate (shrinkage). Also, I have took a help from the lecture notes in this part.
+
+Since it is a multiclass-classification problem, we are going to use the multiClassSummary as the summaryFunction in trainControl and search as GridSearch. 
+
+```{r gbm v3 3, message=FALSE, warning=FALSE}
+set.seed(10)
+
+n_folds=10
+
+fitControl=trainControl(method = "cv",
+                        number = n_folds,
+                        classProbs=TRUE, summaryFunction=twoClassSummary)
+## gradient boosting
+gbmGrid=expand.grid(interaction.depth = c(3, 5), 
+                    n.trees = c(1:5)*100, 
+                    shrinkage = c(0.05,0.1),
+                    n.minobsinnode = 10)
+set.seed(1)                        
+gbm_fit=train(Label ~ ., data = gbm_train_revised, 
+              method = "gbm", 
+              trControl = fitControl, metric='ROC',
+              tuneGrid = gbmGrid,
+              verbose=F) #verbose is an argument from gbm, prints to screen
+gbm_fit
+
+plot(gbm_fit)
+```
+
+Selecting the best model is below: 
+
+Looks like the best GBM model with the parameters (Shrinkage = 0.1, depth = 5, n.trees = 400).
+
+Let's analyze this model with test data finally.
+
+```{r gbm v5 3, message=FALSE, warning=FALSE}
+noftrees=400
+depth=5
+learning_rate=0.1
+
+boosting_model=gbm(Label~., data=gbm_train,distribution = 'bernoulli', n.trees = noftrees,
+                   interaction.depth = depth, n.minobsinnode = 10, shrinkage =learning_rate, cv.folds = 10)
+
+gbm.perf(boosting_model, method = "cv")
+
+prediction.train <- predict(boosting_model, newdata = gbm_train, type = "response")
+
+confusion_data.train <- data.frame(actual = gbm_train$Label,
+                                   predicted = ifelse(prediction.train > 0.5,1,0))  # Assuming a threshold of 0.5 for binary classification
+
+# Create a confusion matrix
+conf_matrix.train <- confusionMatrix(as.factor(confusion_data.train$predicted), as.factor(confusion_data.train$actual))
+
+print(conf_matrix.train)
+
+```
+
+Also analyzing with the test data: 
+
+```{r gbm v6 3, message=FALSE, warning=FALSE}
+prediction.test <- predict(boosting_model, newdata = gbm_test, type = "response")
+
+confusion_data.test <- data.frame(actual = gbm_test$Label,
+                                  predicted = ifelse(prediction.test > 0.5,1,0))  # Assuming a threshold of 0.5 for binary classification
+
+# Create a confusion matrix
+conf_matrix.test <- confusionMatrix(as.factor(confusion_data.test$predicted), as.factor(confusion_data.test$actual))
+
+print(conf_matrix.test)
+```
+
+Results are extremely good in this sample. Especially, identifying multiple classes is kind of difficult issue to solve and iteratively improving weak learners and obtaining strong learner is the best way to solve this specific problem.
+
+Conclusion : We have worked on a dataset about is to support malware research and validation of the effectiveness of malware detection methods and we implemented 4 different learning algorithms with different hyperparameters. We concluded that the Gradient Boosting Machines (GBM) with `(Shrinkage = 0.1, depth = 5, n.trees = 400)` is the algorithm that can explain or classifies the problem most well. 
+4 algorithms are perform extremely good with this dataset in terms of cross-validation errors and test dataset results, however the best one is GBM. But, there is again a tradeoff between cost and performance. This tradeoff must be considered.
+
+Let's move on with the fourth dataset.
+
+
+## Glioma Case
+### Part 4.0  : Explaining the Glioma Case and loading the data.
+
+Gliomas are the most common primary tumors of the brain. They can be graded as LGG (Lower-Grade Glioma) or GBM (Glioblastoma Multiforme) depending on the histological/imaging criteria. Clinical and molecular/mutation factors are also very crucial for the grading process. Molecular tests are expensive to help accurately diagnose glioma patients.  
+
+In this dataset, the most frequently mutated 20 genes and 3 clinical features are considered from TCGA-LGG and TCGA-GBM brain glioma projects.
+
+The prediction task is to determine whether a patient is LGG or GBM with a given clinical and molecular/mutation features. The main objective is to find the optimal subset of mutation genes and clinical features for the glioma grading process to improve performance and reduce costs.
+
+In this part of the assignment, we mainly try to classify the student successes. Let's start by loading the data to the environment.
+
+```{r load the data 4, message=FALSE, warning=FALSE}
+glioma_data_path <- paste0(data_path,"Glioma/glioma.csv")
+
+glioma_data <- read.csv(glioma_data_path)
+
+head(glioma_data)
+```
+
+### Part 4.1  : Data Analysis & Exploring Data & Preprocessing
+
+```{r data analysis 4, message=FALSE, warning=FALSE}
+dim(glioma_data)
+
+str(glioma_data)
+
+summary(glioma_data)
+```
+
+Analyzing the data whether it has null values. If it has, then we need to handle the missing values.
+
+```{r data analysis v2 4, message=FALSE, warning=FALSE}
+colSums(sapply(glioma_data, is.na))
+
+skim(glioma_data)
+```
+
+Can be seen in the data, there is no missing values, which is a good sign for us. First, we need to factorize the target value `Grade`. Then, we also need to execute the encoding operation for the feature `IDH1`. We are going to use one-hot-encoding operation to split  "MUTATED" and "NOT MUTATED" to the numeric values. 
+
+```{r data analysis v3 4, message=FALSE, warning=FALSE}
+glioma_data$Grade <- as.factor(glioma_data$Grade)
+
+# One hot encoding
+glioma_data <- glioma_data %>%
+  mutate(IDH1 = as.factor(IDH1)) %>%
+  bind_cols(model.matrix(~ IDH1 - 1, data = .)) %>%
+  select(-IDH1)  # Drop the original 'IDH1' column
+```
+
+We are ready to move on. Let's make some visualizations to understand data more. It can be seen that There is an imbalance in the class (target) variable between `GBM` and `LGG`. Looks like there is balance between multiclass targets.
+```{r data analysis v4 4, message=FALSE, warning=FALSE}
+ggplot(glioma_data, aes(x = Grade )) +
+  geom_bar(stat = "count") +
+  labs(title = "Count of Glioma Grades", x = "Glioma Grades", y = "Count")
+
+ggcorr(glioma_data,
+       method = c("pairwise"),
+       nbreaks = 6,
+       hjust = 0.8,
+       label = TRUE,
+       label_size = 3,
+       color = "grey20")
+```
+
+### Part 4.2  : Train & Test Split for Modeling (Scaled Split)
+
+In order to train the model and then the test its performance, we need to split the data as training and test datasets. Before hand, we also need to scale the features (except the target feature) while using the K-Nearest-Neighbor algorithm since it is highly affected from feature's scale. 
+
+In order not to mutate the main dataset, we'll copy it and then make the scale and split operation. 
+```{r scaling and data split 4, message=FALSE, warning=FALSE}
+scaled_glioma_data <- glioma_data
+scaled_glioma_data[,-1] <- scale(scaled_glioma_data[,-1])
+
+validationIndex <- createDataPartition(scaled_glioma_data$Grade, p=0.70, list=FALSE)
+
+knn_train <- scaled_glioma_data[validationIndex,] # 70% of data to training
+knn_test <- scaled_glioma_data[-validationIndex,] 
+
+
+cat("Dimension of the main dataset:",dim(scaled_glioma_data))
+cat("Dimension of the train dataset:",dim(knn_train))
+cat("Dimension of the test dataset:",dim(knn_test))
+```
+
+Dataset is scaled, has no missing and duplicated values. It is ready to be used in algorithms.
+
+### Part 4.3  : kNN Algorithm (k-Nearest Neighbor)
+
+Let's start with the kNN algorithm. The algorithm is based on the idea that similar data points tend to be close to each other in the feature space. In other words, the class or value of an unknown data point can be predicted by examining its k-nearest neighbors.
+
+There are two parameters to consider: the distance measure and the number of neighbors. We are mainly interested in two distance measures in this assignment: Euclidean and Manhattan Distance.  
+
+Let's do the Cross Validation to find the optimal k (# of nearest neighbor): 
+```{r knn v1 4, message=FALSE, warning=FALSE}
+# 10-fold Cross Validation
+trainControl <- trainControl(method="repeatedcv", number=10, repeats=5)
+metric <- "Accuracy"
+set.seed(8)
+
+# kNN Part
+fit.knn <- train(Grade~., data=knn_train, method="knn",
+                 metric=metric ,trControl=trainControl)
+knn.optimal.k <- fit.knn$bestTune # keep this Initial k for testing with knn() function in next section
+
+print(fit.knn)
+
+plot(fit.knn)
+```
+
+Accuracy was used to select the optimal model using the largest value.
+After the report of the CV and the plot shows that the final value used for the model was k = 5 and it is the optimum k value for the model.
+
+Confusion matrix for k = 5 is as follows: 
+```{r knn v2 4, message=FALSE, warning=FALSE}
+prediction <- predict(fit.knn, newdata = knn_test)
+cm_knn <- confusionMatrix(prediction, knn_test$Grade)
+print(cm_knn)
+```
+
+Let's do the analysis for different types of k such as the floor of square root of the dataset size (row)
+
+```{r knn v3 4, message=FALSE, warning=FALSE}
+initial_k <- sqrt(NROW(scaled_glioma_data))
+initial_k
+
+knn.floor <- knn(train=knn_train[,-1], test=knn_test[,-1], 
+                 cl=knn_train$Grade, k=floor(initial_k))
+
+# use confusion matrix to calculate accuracy
+cm.floor <- confusionMatrix(knn_test$Grade,knn.floor)
+cm.floor
+```
+
+Its accuracy is similar (relatively higher) but it is misleading since model was not able to identify the GBM well.
+
+Finally, lets also look at the model with Manhattan distance using `kknn` library.
+```{r knn v4 4, message=FALSE, warning=FALSE}
+knn.manhattan <- train.kknn(Grade ~ ., data = knn_train, ks = 5, scale = TRUE, distance = 1)
+predictions.manhattan <- predict(knn.manhattan, newdata = knn_test)
+
+cm.manhattan <- table(predictions.manhattan, knn_test$Grade)
+print(cm.manhattan)
+accuracy.manhattan <- sum(diag(cm.manhattan)) / sum(cm.manhattan)
+print(paste("Accuracy for kNN with Manhattan Distance:", round(accuracy.manhattan,5)))
+```
+
+Performance of the `Manhattan kNN` is a little better than the `Euclidean kNN`. Even the accuracy is similar, classification of negative cases like droput and enrolled are better.
+
+Thus, we decided that the best model that explains this dataset is the kNN with `k = 5 & distance = Manhattan`.
+
+
+### Part 4.4  : Decision Tree Algorithm 
+
+Let's move with the second one which is the Decision Tree (DT) algorithm. 
+
+First, arranging the dataset in order not to mutate original one, we copy from it. 
+
+```{r dt v1 4, message=FALSE, warning=FALSE}
+# Copying the main dataset
+glioma_data_dt <- data.table(glioma_data)
+
+head(glioma_data_dt)
+dim(glioma_data_dt)
+```
+
+```{r dt v2 4, message=FALSE, warning=FALSE}
+# Remove rows with any NA values
+glioma_data_dt <- na.omit(glioma_data_dt)
+validationIndex <- createDataPartition(glioma_data_dt$Grade, p=0.70, list=FALSE)
+
+dt_train <- glioma_data_dt[validationIndex,] # 70% of data to training
+dt_test <- glioma_data_dt[-validationIndex,]
+
+cat("Dimension of the main dataset:",dim(glioma_data_dt))
+cat("Dimension of the train dataset:",dim(dt_train))
+cat("Dimension of the test dataset:",dim(dt_test))
+```
+
+Dataset is ready to be learned and now we are going to implement a manual cross validation to tune the hyperparameters for the decision tree and we are going to look at its Accuracy value in each iteration. 
+
+Assuming the tuning hyperparameter will be only the minimal number of observations per tree leaf. Setting complexity parameter to zero and minimum number of observations to split as the twice as the minimal number
+of observations per tree leaf.
+
+In the end, we are going to store them in df to find the best model. 
+
+```{r dt v3 4, message=FALSE, warning=FALSE}
+# Create a data frame to store cross-validation results
+cv_results <- data.frame(minbucket = numeric(), accuracy = numeric())
+
+set.seed(10)
+
+# Define a range of minsplit values to try
+minbucket_values <- c(1, 5, 10, 15, 20) 
+
+# Perform cross-validation for each minbucket value
+for (minbucket_val in minbucket_values) {
+  # Create a decision tree model with the current minbucket value
+  tree_model <- rpart(Grade~.,dt_train,method='class',
+                      control=rpart.control(cp=0, minbucket = minbucket_val, minsplit = 2*minbucket_val))
+  
+  predictions <- predict(tree_model, newdata = dt_train, type = "class")
+  correct_predictions <- sum(predictions == dt_train$Grade)
+  # Calculate accuracy
+  accuracy <- round(correct_predictions / nrow(dt_train),5)
+  
+  # Store the results in the data frame
+  cv_results <- rbind(cv_results, data.frame(minbucket = minbucket_val, accuracy = accuracy))
+}
+
+# Print the cross-validation results
+print(cv_results)
+```
+
+Best accuracy belongs to the `minbucket` = 1 but the this model poorly performs in the test dataset. It seems that overfitting occurs. On the other hand, `minbucket` = 5 performs well both in training and test dataset.
+Looks like the model with `minbucket` = 5 is the best model in terms of ROC, lets also analyze its ROC, AUC and confusion matrix.
+
+```{r dt v4 4, message=FALSE, warning=FALSE}
+minbucket_val <- 5
+best_tree_model <- rpart(Grade~.,dt_train,method='class',
+                         control=rpart.control(cp=0, minbucket = minbucket_val, minsplit = 2*minbucket_val))
+
+fancyRpartPlot(best_tree_model)
+```
+
+
+Its confusion matrices with respect to training & test dataset are below. It successfully classifies the target values near 92% with traind and 85% with test dataset.
+
+```{r dt v5 4, message=FALSE, warning=FALSE}
+predictions_model <- predict(best_tree_model, newdata = dt_train, type = "class")
+cm_train <- confusionMatrix(predictions_model, dt_train$Grade)
+cm_train
+predictions_model.test <- predict(best_tree_model, newdata = dt_test, type = "class")
+cm_test <- confusionMatrix(predictions_model.test, dt_test$Grade)
+cm_test
+```
+
+Finally, we can look its ROC curve and AUC score 
+
+```{r dt v6 4, message=FALSE, warning=FALSE}
+p1 <- predict(best_tree_model, dt_test, type = 'prob')
+p1 <- p1[,2]
+r <- multiclass.roc(dt_test$Grade, p1, percent = TRUE)
+roc <- r[['rocs']]
+r1 <- roc[[1]]
+plot.roc(r1,
+         print.auc=TRUE,
+         auc.polygon=TRUE,
+         grid=c(0.1, 0.2),
+         grid.col=c("green", "red"),
+         max.auc.polygon=TRUE,
+         auc.polygon.col="lightblue",
+         print.thres=TRUE,
+         main= 'ROC Curve')
+```
+
+### Part 4.5  : Random Forest Algorithm 
+
+Let's move with the third one which is the Random Forest (RF) algorithm. 
+
+First, arranging the dataset in order not to mutate original one, we copy from it. 
+
+```{r rf v1 4, message=FALSE, warning=FALSE}
+# Copying the main dataset
+glioma_data_rf <- data.table(glioma_data)
+
+head(glioma_data_rf)
+dim(glioma_data_rf)
+```
+
+```{r rf v2 4, message=FALSE, warning=FALSE}
+glioma_data_rf <- na.omit(glioma_data_rf)
+validationIndex <- createDataPartition(glioma_data_rf$Grade, p=0.70, list=FALSE)
+
+rf_train <- glioma_data_rf[validationIndex,] # 70% of data to training
+rf_test <- glioma_data_rf[-validationIndex,]
+
+cat("Dimension of the main dataset:",dim(glioma_data_rf))
+cat("Dimension of the train dataset:",dim(rf_train))
+cat("Dimension of the test dataset:",dim(rf_test))
+```
+
+Dataset is ready to be learned and now we are going to implement a manual cross validation to tune the hyperparameters for the random forest and we are going to look at its error value in each iteration. 
+
+Assuming the tuning hyperparameter will be only the effect of the ratio of the number of features evaluated at each split (mtry) and setting other parameters as J=500 and the minimal number of observations
+per tree leaf=5.
+
+In the end, we are going to store them in table to find the best model. 
+
+```{r rf v3 4, message=FALSE, warning=FALSE}
+set.seed(50)
+# CV RF
+
+# Set the number of trees and nodesize
+num_trees <- 500
+min_obs_per_leaf <- 5
+
+# Create a grid of mtry values to explore
+mtry_values <- c(2, 4, 6, 8, 10, 15, 20)  # Add more values as needed
+
+# Create an empty data frame to store results
+rf_results <- data.frame(mtry = numeric(0), error_rate = numeric(0))
+
+# Perform grid search
+for (m in mtry_values) {
+  # Train the Random Forest model
+  rf_model <- randomForest(Grade ~ ., data = rf_train, 
+                           ntree = num_trees, nodesize = min_obs_per_leaf, mtry = m)
+  
+  # Make predictions on the training set
+  predictions <- predict(rf_model, dt_train)
+  
+  # Calculate the error rate (you may want to use a more appropriate metric)
+  error_rate <- mean(predictions != rf_train$Grade)
+  
+  # Store the results
+  rf_results <- rbind(rf_results, data.frame(mtry = m, error_rate = error_rate))
+}
+
+# Print the results
+print(rf_results)
+
+# Create a line plot
+ggplot(rf_results, aes(x = mtry, y = error_rate)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Error Rate vs. mtry",
+       x = "mtry",
+       y = "Error Rate") +
+  theme_minimal()
+```
+
+Looks like the model with `mtry` = 8 (given `ntree` = 500 & `nodesize` = 5) is the best model in terms of error rate, lets also analyze confusion matrix.
+
+```{r rf v4 4, message=FALSE, warning=FALSE}
+best_rf_model <- randomForest(Grade ~ ., data = rf_train, 
+                              ntree = num_trees, nodesize = min_obs_per_leaf, mtry = 8)
+
+# Make predictions on the train set
+rf_predictions.train <- predict(best_rf_model, newdata = rf_train)
+
+# Create the confusion matrix
+rf_confusion_matrix.train <- confusionMatrix(rf_predictions.train, rf_train$Grade)
+
+# Print the confusion matrix
+print(rf_confusion_matrix.train)
+
+# Make predictions on the test set
+rf_predictions.test <- predict(best_rf_model, newdata = rf_test)
+
+# Create the confusion matrix
+rf_confusion_matrix.test <- confusionMatrix(rf_predictions.test, rf_test$Grade)
+
+# Print the confusion matrix
+print(rf_confusion_matrix.test)
+```
+
+Its confusion matrices with respect to training & test dataset are above It classifies the target values near 95% wtih the training dataset. Its' test metrics are also well such as accuracy around 88%.
+
+Finally, let's look at the variable importance and the partial dependence plots. VarImp plot basically shows which feature has the most contribution to the model while it is improving (making purer). Partial Dependence plot is the plot showing the effect of selected feature to the predictions.
+
+```{r rf v5 4, message=FALSE, warning=FALSE}
+# Plot variable importance
+varImpPlot(best_rf_model)
+
+# Create partial dependence plot
+partial_plot <- partial(best_rf_model, pred.var = 'Age_at_diagnosis', data = dt_test)
+
+# Plot the partial dependence plot
+plot(partial_plot)
+```
+
+### Part 4.6  : GBM Algorithm 
+
+Let's move with the third one which is the Gradient Boosting Machine (GBM) algorithm. 
+
+First, arranging the dataset in order not to mutate original one, we copy from it. 
+
+```{r gbm v1 4, message=FALSE, warning=FALSE}
+glioma_data_gbm <- data.table(glioma_data)
+
+head(glioma_data_gbm)
+dim(glioma_data_gbm)
+```
+
+```{r gbm v2 4, message=FALSE, warning=FALSE}
+# Remove rows with any NA values
+glioma_data_gbm <- na.omit(glioma_data_gbm)
+validationIndex <- createDataPartition(glioma_data_gbm$Grade, p=0.70, list=FALSE)
+
+gbm_train <- glioma_data_gbm[validationIndex,] # 70% of data to training
+gbm_test <- glioma_data_gbm[-validationIndex,]
+
+cat("Dimension of the main dataset:",dim(glioma_data_gbm))
+cat("Dimension of the train dataset:",dim(gbm_train))
+cat("Dimension of the test dataset:",dim(gbm_test))
+```
+
+In above, there are 2 train & test pairs occur. One will be used in the cross validation and the other will be used to test the best model with tuned parameters.
+
+Let's tune the hyperparameters of the GBM with respect to the "AUC" value".
+
+We are mainly interested in tuning the depth (interaction.depth), the number of
+trees (n.trees) and the learning rate (shrinkage). Also, I have took a help from the lecture notes in this part.
+
+Since it is a multiclass-classification problem, we are going to use the multiClassSummary as the summaryFunction in trainControl and search as GridSearch. 
+
+```{r gbm v3 4, message=FALSE, warning=FALSE}
+set.seed(10)
+
+n_folds=10
+
+fitControl=trainControl(method = "cv",
+                        number = n_folds,
+                        classProbs=TRUE,
+                        search = "grid",
+                        summaryFunction = multiClassSummary)
+## gradient boosting
+gbmGrid=expand.grid(interaction.depth = c(3, 5), 
+                    n.trees = c(1:5)*100, 
+                    shrinkage = c(0.05,0.1),
+                    n.minobsinnode = 10)
+set.seed(1)                        
+gbm_fit=train(Grade ~ ., data = gbm_train, 
+              method = "gbm", 
+              trControl = fitControl, metric='AUC',
+              tuneGrid = gbmGrid,
+              verbose=F) #verbose is an argument from gbm, prints to screen
+gbm_fit
+
+
+plot(gbm_fit)
+```
+
+Selecting the best model is below: 
+
+Looks like the best GBM model with the parameters (Shrinkage = 0.1, depth = 3, n.trees = 100).
+
+Let's analyze this model with test data finally.
+
+```{r gbm v5 4, message=FALSE, warning=FALSE}
+noftrees=100
+depth=3
+learning_rate=0.1
+
+boosting_model=gbm(Grade~., data=gbm_train,distribution = 'multinomial', n.trees = noftrees,
+                   interaction.depth = depth, n.minobsinnode = 10, shrinkage =learning_rate, cv.folds = 10)
+
+summary(boosting_model)
+
+gbm.perf(boosting_model, method = "cv")
+
+prediction.train <- predict(boosting_model, newdata = gbm_train, type = "response")
+
+
+predicted_classes <- apply(prediction.train, 1, which.max)
+
+
+# Create a confusion matrix
+conf_matrix <- table(gbm_train$Grade, predicted_classes)
+
+# Print the confusion matrix
+print(conf_matrix)
+
+```
+
+Also analyzing with the test data: 
+
+```{r gbm v6 4, message=FALSE, warning=FALSE}
+prediction.test <- predict(boosting_model, newdata = gbm_test, type = "response")
+
+
+predicted_classes <- apply(prediction.test, 1, which.max)
+
+
+# Create a confusion matrix
+conf_matrix <- table(gbm_test$Grade, predicted_classes)
+
+# Print the confusion matrix
+print(conf_matrix)
+
+# Calculate accuracy
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+
+# Print the accuracy
+print(accuracy)
+```
+
+Results are quite good in this sample. Decision Tree and GBM can be used to identify glioma types of disease. Especially, identifying multiple classes is kind of difficult issue to solve and iteratively improving weak learners and obtaining strong learner is the best way to solve this specific problem.
+
+Conclusion : We have worked on a dataset about the is to determine whether a patient is LGG or GBM with a given clinical and molecular/mutation features and implemented 4 different learning algorithms with different hyperparameters. We concluded that the Random Forest with `mtry = 8`  is the algorithm that can explain or classifies the problem most well. Alternatively, Gradient Boosting Machines (GBM) with `(Shrinkage = 0.1, depth = 3, n.trees = 100)` can be also used.  
+
+Let's move on with the fifth dataset which is about the predicting Total Power of Large scale wave energy.
+
+
+## Large-scale Wave Energy Case
+### Part 5.0  : Explaining the Large-scale Wave Energy Case and loading the data.
+
+Wave energy is a rapidly advancing and promising renewable energy source that holds great potential for addressing the challenges of global warming and climate change. However, optimizing energy output in large wave farms presents a complex problem due to the expensive calculations required to account for hydrodynamic interactions between wave energy converters (WECs). Developing a fast and accurate surrogate model is crucial to overcome these challenges. In light of this, we have compiled an extensive WEC dataset that includes 54,000 and 9,600 configurations involving 49 and 100 WECs, coordination, power, q-factor, and total farm power output.   
+
+This dataset was created to develop a fast and effective surrogate model for estimating the total power out of the large wave farm accurately. 
+
+Also, this dataset has >100 features, and since the target class is continuous variable, we need to implement regression model on this problem.
+
+In this part of the assignment, we mainly try to classify the student successes. Let's start by loading the data to the environment.
+
+```{r load the data 5, message=FALSE, warning=FALSE}
+energy_data_path <- paste0(data_path,"WaveEnergy/energy.csv")
+
+energy_data <- read.csv(energy_data_path)
+
+head(energy_data)
+```
+
+### Part 5.1  : Data Analysis & Exploring Data & Preprocessing
+
+```{r data analysis 5, message=FALSE, warning=FALSE}
+dim(energy_data)
+
+str(energy_data)
+
+summary(energy_data)
+```
+
+Analyzing the data whether it has null values. If it has, then we need to handle the missing values.
+
+```{r data analysis v2 5, message=FALSE, warning=FALSE}
+colSums(sapply(energy_data, is.na))
+```
+
+Can be seen in the data, there is no missing values, which is a good sign for us. We need to get rid of the duplicated values. 
+
+```{r data analysis v3 5, message=FALSE, warning=FALSE}
+energy_data <- energy_data[!duplicated(energy_data), ]
+```
+
+We are ready to move on. Let's make some visualizations to understand data more.
+
+```{r data analysis v4 5, message=FALSE, warning=FALSE}
+hist(energy_data$Total_Power, main = "Histogram of Total Power", xlab = "Total Power")
+
+plot(density(energy_data$Total_Power), main = "Histogram of Total Power", xlab = "Total Power")
+```
+
+### Part 5.2  : Train & Test Split for Modeling (Scaled Split)
+
+In order to train the model and then the test its performance, we need to split the data as training and test datasets. Before hand, we also need to scale the features (except the target feature) while using the K-Nearest-Neighbor algorithm since it is highly affected from feature's scale. 
+
+In order not to mutate the main dataset, we'll copy it and then make the scale and split operation. 
+```{r scaling and data split 5, message=FALSE, warning=FALSE}
+scaled_energy_data <- energy_data
+scaled_energy_data[,-149] <- scale(scaled_energy_data[,-149])
+
+validationIndex <- createDataPartition(scaled_energy_data$Total_Power, p=0.70, list=FALSE)
+
+knn_train <- scaled_energy_data[validationIndex,] # 70% of data to training
+knn_test <- scaled_energy_data[-validationIndex,] 
+
+
+cat("Dimension of the main dataset:",dim(scaled_energy_data))
+cat("Dimension of the train dataset:",dim(knn_train))
+cat("Dimension of the test dataset:",dim(knn_test))
+```
+
+Dataset is scaled, has no missing and duplicated values. It is ready to be used in algorithms.
+
+### Part 5.3  : kNN Algorithm (k-Nearest Neighbor Regressor)
+
+Let's start with the kNN algorithm. The algorithm is based on the idea that similar data points tend to be close to each other in the feature space. In other words, the class or value of an unknown data point can be predicted by examining its k-nearest neighbors.
+
+There is a parameters to consider: the distance measure and the number of neighbors.
+
+Differen than classification cross-validation, we we are going to use the knn.reg function of R and the comparing metric will be Mean Squared Error of models.
+
+Let's do the Cross Validation (Mean Squared Error (MSE) will be used as a metric) to find the optimal k (# of nearest neighbor): 
+```{r knn v1 5, message=FALSE, warning=FALSE}
+set.seed(25)
+
+# knn CV
+k_values <- c(1, 2, 3, 5, 7, 10, 15, 20)  
+
+# Create an empty data frame to store results
+knn_results <- data.frame(k = numeric(0), MSE = numeric(0))
+
+# Perform grid search
+for (k in k_values) {
+  knn_model <- knn.reg(knn_train[,-149],y = knn_train$Total_Power,k=k)
+  
+  mse <- round(mean(sqrt((knn_model$pred - knn_train$Total_Power)^2)),3)
+  
+  # Store the results
+  knn_results <- rbind(knn_results, data.frame(k = k, MSE = mse))
+}
+
+# Print the results
+print(knn_results)
+
+ggplot(knn_results, aes(x = k, y = MSE)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "MSE vs. k",
+       x = "k",
+       y = "MSE") +
+  theme_minimal()
+
+```
+
+After the report of the CV and the plot shows that the final value used for the model was k = 5 and it is the optimum k value for the model with respect to MSE.
+
+Regression metrics for k = 5 is as follows: 
+
+```{r knn v2 5, message=FALSE, warning=FALSE}
+# Test using test data
+knn_best <- knn.reg(knn_test[,-149],y = knn_test$Total_Power,k= 5)
+
+predictions <- knn_best$pred
+true_values <- knn_test$Total_Power
+
+# Calculate Mean Absolute Error (MAE)
+mae <- mean(abs(predictions - true_values))
+print(paste("Mean Absolute Error (MAE):", mae))
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse <- sqrt(mean((predictions - true_values)^2))
+print(paste("Root Mean Squared Error (RMSE):", rmse))
+
+# Calculate R-squared (R²)
+sse <- sum((predictions - true_values)^2)
+sst <- sum((true_values - mean(true_values))^2)
+rsquared <- 1 - (sse / sst)
+print(paste("R-squared (R²):", rsquared))
+
+```
+
+
+Thus, we decided that the best model that explains this dataset is the kNN with `k = 5`.
+
+
+### Part 5.4  : Decision Tree Algorithm (Regression) 
+
+Let's move with the second one which is the Decision Tree (DT) algorithm. 
+
+First, arranging the dataset in order not to mutate original one, we copy from it. 
+
+```{r dt v1 5, message=FALSE, warning=FALSE}
+# Copying the main dataset
+energy_data_dt <- data.table(energy_data)
+
+dim(energy_data_dt)
+```
+
+```{r dt v2 5, message=FALSE, warning=FALSE}
+# Remove rows with any NA values
+energy_data_dt <- na.omit(energy_data_dt)
+validationIndex <- createDataPartition(energy_data_dt$Total_Power, p=0.70, list=FALSE)
+
+dt_train <- energy_data_dt[validationIndex,] # 70% of data to training
+dt_test <- energy_data_dt[-validationIndex,]
+
+cat("Dimension of the main dataset:",dim(energy_data_dt))
+cat("Dimension of the train dataset:",dim(dt_train))
+cat("Dimension of the test dataset:",dim(dt_test))
+```
+
+Dataset is ready to be learned and now we are going to implement a manual cross validation to tune the hyperparameters for the decision tree and we are going to look at its MSE value in each iteration. 
+
+Assuming the tuning hyperparameter will be only the minimal number of observations per tree leaf. Setting complexity parameter to zero and minimum number of observations to split as the twice as the minimal number
+of observations per tree leaf.
+
+In the end, we are going to store them in df to find the best model. 
+
+```{r dt v3 5, message=FALSE, warning=FALSE}
+cv_results <- data.frame(minbucket = numeric(), RMSE = numeric())
+
+set.seed(10)
+
+# Define a range of minsplit values to try
+minbucket_values <- c(1, 5, 10, 15, 20) 
+
+# Perform cross-validation for each minbucket value
+for (minbucket_val in minbucket_values) {
+  # Create a decision tree regression model with the current minbucket value
+  tree_model <- rpart(Total_Power~.,dt_train,method='anova',
+                      control=rpart.control(cp=0, minbucket = minbucket_val, minsplit = 2*minbucket_val))
+  
+  predictions <- predict(tree_model, newdata = dt_train)
+  
+  true_values <- dt_train$Total_Power
+  
+  rmse <- round(sqrt(mean((predictions - true_values)^2)),3)
+  
+  # Store the results in the data frame
+  cv_results <- rbind(cv_results, data.frame(minbucket = minbucket_val, RMSE = rmse))
+}
+
+# Print the cross-validation results
+print(cv_results)
+```
+
+Least MSE belongs to the `minbucket` = 1 but the this model poorly performs in the test dataset. It seems that overfitting occurs. On the other hand, `minbucket` = 5 performs well both in training and test dataset.
+Looks like the model with `minbucket` = 5 is the best model in terms of MSE. Lets look at its other regression metrics.
+
+```{r dt v4 5, message=FALSE, warning=FALSE}
+minbucket_val <- 5
+best_tree_model <- rpart(Total_Power~.,dt_train,method='anova',
+                         control=rpart.control(cp=0, minbucket = minbucket_val, minsplit = 2*minbucket_val))
+
+# Make predictions on the test set
+predictions <- predict(best_tree_model, newdata = dt_test)
+
+# True values from the test set
+true_values <- dt_test$Total_Power
+
+# Calculate Mean Absolute Error (MAE)
+mae <- mean(abs(predictions - true_values))
+print(paste("Mean Absolute Error (MAE):", mae))
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse <- round(sqrt(mean((predictions - true_values)^2)),3)
+print(paste("Root Mean Squared Error (RMSE):", rmse))
+
+# Calculate R-squared (R²)
+sse <- sum((predictions - true_values)^2)
+sst <- sum((true_values - mean(true_values))^2)
+rsquared <- 1 - (sse / sst)
+print(paste("R-squared (R²):", rsquared))
+```
+
+Its Error metrics is quite low with respect to problem size and R^2 is near 99%
+
+Finally, we can look its predictions vs. actuals as a scatter plot.
+
+```{r dt v5 5, message=FALSE, warning=FALSE}
+# Create a scatterplot
+plot(true_values, predictions, 
+     main = "Predictions vs Actual Data",
+     xlab = "True Values",
+     ylab = "Predicted Values",
+     pch = 16,  # Set the point character
+     col = "blue"  # Set the point color
+)
+
+# Add a diagonal line for reference
+abline(0, 1, col = "red", lty = 2)
+
+# Add a legend
+legend("topright", legend = "Diagonal Line (Reference)", col = "red", lty = 2, cex = 0.8)
+```
+
+### Part 5.5  : Random Forest Algorithm (Regression)
+
+Let's move with the third one which is the Random Forest (RF) algorithm. 
+
+First, arranging the dataset in order not to mutate original one, we copy from it. 
+
+```{r rf v1 5, message=FALSE, warning=FALSE}
+# Copying the main dataset
+energy_data_rf <- data.table(energy_data)
+
+dim(energy_data_rf)
+```
+
+```{r rf v2 5, message=FALSE, warning=FALSE}
+validationIndex <- createDataPartition(energy_data_rf$Total_Power, p=0.70, list=FALSE)
+
+rf_train <- energy_data_rf[validationIndex,] # 70% of data to training
+rf_test <- energy_data_rf[-validationIndex,]
+
+cat("Dimension of the main dataset:",dim(energy_data_rf))
+cat("Dimension of the train dataset:",dim(rf_train))
+cat("Dimension of the test dataset:",dim(rf_test))
+```
+
+Dataset is ready to be learned and now we are going to implement a manual cross validation to tune the hyperparameters for the random forest and we are going to look at its error value in each iteration. 
+
+Assuming the tuning hyperparameter will be only the effect of the ratio of the number of features evaluated at each split (mtry) and setting other parameters as J=500 and the minimal number of observations
+per tree leaf=5.
+
+In the end, we are going to store them in table to find the best model. 
+
+```{r rf v3 5, message=FALSE, warning=FALSE}
+set.seed(12)
+# Set the number of trees and nodesize
+num_trees <- 500
+min_obs_per_leaf <- 5
+
+# Create a grid of mtry values to explore
+mtry_values <- c(2, 4, 6, 8, 10)  # Add more values as needed
+
+# Create an empty data frame to store results
+rf_results <- data.frame(mtry = numeric(), RMSE = numeric())
+
+# Perform grid search
+for (m in mtry_values) {
+  # Train the Random Forest model
+  rf_model <- randomForest(Total_Power ~ ., data = rf_train, 
+                           ntree = num_trees, nodesize = min_obs_per_leaf, mtry = m)
+  
+  # Make predictions on the training set
+  predictions <- predict(rf_model, newdata = rf_train)
+  
+  true_values <- rf_train$Total_Power
+  
+  rmse <- round(sqrt(mean((predictions - true_values)^2)),3)
+  
+  # Store the results in the data frame
+  rf_results <- rbind(rf_results, data.frame(mtry = m, RMSE = rmse))
+}
+
+# Print the results
+print(rf_results)
+
+ggplot(rf_results, aes(x = mtry, y = RMSE)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "RMSE vs. mtry",
+       x = "mtry",
+       y = "RMSE") +
+  theme_minimal()
+```
+
+Looks like the model with `mtry` = 10 (given `ntree` = 500 & `nodesize` = 5) is the best model in terms of RMSE, lets also analyze the other metrics using test dataset.
+
+```{r rf v4 5, message=FALSE, warning=FALSE}
+best_rf_model <- randomForest(Total_Power ~ ., data = rf_train, 
+                              ntree = num_trees, nodesize = min_obs_per_leaf, mtry = 10)
+
+# Make predictions on the test set
+predictions <- predict(best_rf_model, newdata = rf_test)
+
+# True values from the test set
+true_values <- rf_test$Total_Power
+
+# Calculate Mean Absolute Error (MAE)
+mae <- mean(abs(predictions - true_values))
+print(paste("Mean Absolute Error (MAE):", mae))
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse <- round(sqrt(mean((predictions - true_values)^2)),3)
+print(paste("Root Mean Squared Error (RMSE):", rmse))
+
+# Calculate R-squared (R²)
+sse <- sum((predictions - true_values)^2)
+sst <- sum((true_values - mean(true_values))^2)
+rsquared <- 1 - (sse / sst)
+print(paste("R-squared (R²):", rsquared))
+
+```
+
+Its errors are similar to the decision Tree, but its test R^2 is less than the decision tree. 
+
+Finally, let's look at the variable importance and the partial dependence plots. VarImp plot basically shows which feature has the most contribution to the model while it is improving (making purer). Partial Dependence plot is the plot showing the effect of selected feature to the predictions.
+
+```{r rf v5 5, message=FALSE, warning=FALSE}
+# Plot variable importance
+varImpPlot(best_rf_model)
+
+# Create partial dependence plot
+partial_plot <- partial(best_rf_model, pred.var = 'qW', data = dt_test)
+
+# Plot the partial dependence plot
+plot(partial_plot)
+```
+
+### Part 5.6  : GBM Algorithm 
+
+Let's move with the third one which is the Gradient Boosting Machine (GBM) algorithm. 
+
+First, arranging the dataset in order not to mutate original one, we copy from it. 
+
+```{r gbm v1 5, message=FALSE, warning=FALSE}
+energy_data_gbm <- data.table(energy_data)
+
+dim(energy_data_gbm)
+```
+
+```{r gbm v2 5, message=FALSE, warning=FALSE}
+validationIndex <- createDataPartition(energy_data_gbm$Total_Power, p=0.70, list=FALSE)
+
+gbm_train <- energy_data_gbm[validationIndex,] # 70% of data to training
+gbm_test <- energy_data_gbm[-validationIndex,]
+
+cat("Dimension of the main dataset:",dim(energy_data_gbm))
+cat("Dimension of the train dataset:",dim(gbm_train))
+cat("Dimension of the test dataset:",dim(gbm_test))
+```
+
+In above, there are 2 train & test pairs occur. One will be used in the cross validation and the other will be used to test the best model with tuned parameters.
+
+Let's tune the hyperparameters of the GBM with respect to the "RMSE" value.
+
+We are mainly interested in tuning the depth (interaction.depth), the number of
+trees (n.trees) and the learning rate (shrinkage). Also, I have took a help from the lecture notes in this part.
+
+```{r gbm v3 5, message=FALSE, warning=FALSE}
+set.seed(10)
+
+n_folds=10
+
+fitControl=trainControl(method = "cv",
+                        number = n_folds)
+## gradient boosting
+gbmGrid=expand.grid(interaction.depth = c(3, 5), 
+                    n.trees = c(1:5)*100, 
+                    shrinkage = c(0.05,0.1),
+                    n.minobsinnode = 10)
+set.seed(1)                        
+gbm_fit=train(Total_Power ~ ., data = gbm_train, 
+              method = "gbm", 
+              trControl = fitControl, metric='RMSE',
+              tuneGrid = gbmGrid,
+              verbose=F) #verbose is an argument from gbm, prints to screen
+gbm_fit
+
+
+plot(gbm_fit)
+```
+
+Selecting the best model is below: 
+
+Looks like the best GBM model with the parameters (Shrinkage = 0.1, depth = 5, n.trees = 500).
+
+Let's analyze this model with test data finally.
+
+```{r gbm v5 5, message=FALSE, warning=FALSE}
+noftrees=500
+depth=5
+learning_rate=0.1
+
+boosting_model=gbm(Total_Power~., data=gbm_train,distribution = 'gaussian', n.trees = noftrees,
+                   interaction.depth = depth, n.minobsinnode = 10, shrinkage =learning_rate, cv.folds = 10)
+
+gbm.perf(boosting_model, method = "cv")
+
+prediction.test <- predict(boosting_model, newdata = gbm_test, type = "response")
+
+# True values from the test set
+true_values <- gbm_test$Total_Power
+
+# Calculate Mean Absolute Error (MAE)
+mae <- mean(abs(predictions - true_values))
+print(paste("Mean Absolute Error (MAE):", mae))
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse <- round(sqrt(mean((predictions - true_values)^2)),3)
+print(paste("Root Mean Squared Error (RMSE):", rmse))
+
+```
+
+Results are not quite good with the GBM. Decision Tree and Random Forest are far successful than the GBM. Also, it takes too much time to gbm learns the data.
+
+Conclusion : We have worked on a dataset about the predicting large-scale wave energy and implemented 4 different learning algorithms with different hyperparameters. We concluded that the Random Forest with `mtry = 10` and Decision Tree with `minbucket = 5`  are the algorithms that can explain or predict the problem most well.
+
+### Part 6 : Conclusion & General Comments
+
+All in all, We have worked on 5 different cases, 4 are classification problem and the one is a regression problem. We have implemented 4 main algorithm which are kNN, Decision Tree, Random Forest and GBM. We have analyzed their performances in terms of classification and regression metrics, prediction quality, time complexity. On each dataset, we have developed a best algorithm to explain the dataset well and can predict the future not known labels. 
+
+For this 5 cases, 
+GBM performed well in terms of ROC, AUC in classification and RMSE in regression, but it took long time to be learned.
+DT & kNN were also not bad with most of the cases, they were fast but could not explain the data very well. 
+RandomForest was both fast and sufficient ability to explain each problem, also it is better than Decision Tree because it does not result with overfitting by using bootstrap aggregating (bagging). 
+
+To summary, any problem is unique and depending on the aim metric (accuracy, precision, error rate etc.) and cost (time, money etc.), any algorithm can be used to predict or classify.
+
+                                                                                                `Anıl Turgut - 2022702072`

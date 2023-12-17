@@ -13,3 +13,5 @@ Also, you can achieve the [R](files/HW1/IE582HW1_R.R) and [Rmd](files/HW1/IE582H
 
 #### Homework 2 (Due in Dec 18, 2023)
 Here is the [Homework 2 description](files/HW2/IE582_Fall23_Homework2.pdf) for the Fall23.<br>
+Here you can check [my approach](files/HW1/IE582HW1.html) to the Homework 2.<br>
+Also, you can achieve the [Datasets](files/HW2/Dataset/) [R](files/HW2/IE582HW2RScripts.R) and [Rmd](files/HW2/IE582HW2.Rmd) files. <br>
