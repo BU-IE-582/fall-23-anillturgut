@@ -24,6 +24,6 @@ Since Homework 3 is optional, I prefer that percentage to be determined by the f
 
 Here is the [Project description](files/Project/IE582_Fall23_Project_Description.pdf) for the project for the Fall23. <br>
 
-Here you can check [our report](files/Project/IE582ProjectReportGroup6.pdf) to the Project as Group 6.<br>
+Here you can check [our report](files/Project/IE582ProjectReportGroup6.pdf) of the Project as Group 6.<br>
 
 Also, you can achieve the [R Report](files/Project/IE582Project.html) and [Rmd](files/Project/IE582Project.Rmd) files. <br>
