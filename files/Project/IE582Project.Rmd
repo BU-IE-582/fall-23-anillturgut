@@ -1,0 +1,1177 @@
+---
+title: "IE582Project"
+author: "Anıl Turgut"
+date: "2023-12-11"
+output: html_document
+---
+
+## Introduction 
+
+In this project, we will do a study on data analysis and applications on 30 different stocks in Borsa Istanbul, their prices and corresponding time periods. Additionally, starting from December 24th, we will make a 10-hour stock price prediction for 30 stocks (300 in total) every day. We will analyze these predictions with different Data Mining/Machine Learning algorithms and examine which one might be more efficient to use in this report. Since there are not much raw columns in data, we need to somehow obtain an extra information from existing features or from another sources (such as Yahoo Finance using Quantmod library).
+
+The data includes hourly average prices of selected stocks from Borsa İstanbul, presented in separate csv files for each time interval, encompassing about 4 years of data in long format. We will going to find ways to handle this long format since we do not want other stocks affects a specific stock's price in negative way.
+
+Let's start with initialization. 
+
+### Loading required libraries & Data. 
+
+At first, We loaded the data to the R Environment to complete the parts of the question. Also, loaded some libraries providing the visualizations to interpret the data.
+
+```{r library,  message=FALSE, warning=FALSE}
+library(data.table)
+library(quantmod) # for Yahoo Finance library
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(plotly)
+library(rpart.plot)
+library(skimr)
+library(GGally)
+library(caret) # for machine learning and predictive modeling
+library(rpart) # for rpart
+library(gbm) # for Boosted Decision Trees
+library(randomForest) # for random forests
+library(reshape2) # for graphs
+library(FNN)
+library(class)
+require(rattle)
+library(pROC)
+library(pdp)
+library(MLmetrics)
+library(magick)
+library(forecast)
+library(cluster)
+library(plotly)
+library(factoextra)
+library(Metrics)
+```
+
+Note that the `path` is set to the folder in my computer. Please change it to run the commands properly.
+
+As can be seen that there are 24 different csv files including historical stock prices of 30 stocks from 2018 to 2023. With the script below, they will be merged to a single data frame.
+
+```{r load the data, message=FALSE, warning=FALSE}
+path <- "C:/Users/anil.turgut/Desktop/582Project/Data"
+
+# Get a list of CSV files in the directory
+files <- list.files(path, pattern = "\\.csv", full.names = TRUE)
+files
+# Create an empty data frame to store the merged data
+data <- data.frame()
+# Loop through each file and merge it into the 'data' data frame
+for (file in files) {
+  # Read the CSV file
+  current_data <- read.csv(file, header = TRUE)
+  
+  # Merge the current data with the existing merged data
+  data <- bind_rows(data, current_data)
+  
+}
+
+head(data)
+dim(data)
+```
+
+We have successfully loaded data as a single dataframe, now move on with the Feature Engineering part. 
+
+### Feature Engineering & Yahoo Finance Library
+
+We have three features in our dataset which are `timestamp, short_name, price`. Since these information are not sufficient to create strong learning models, we need to obtain new features using existing ones or from another source. 
+
+Also, there are some data modifications that will helps us in further analysis or modeling in below script. 
+```{r feature engineering v1, message=FALSE, warning=FALSE}
+
+# Changing timestamp's type to POSIX to use as time series feature
+data$timestamp <- as.POSIXct(data$timestamp, format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+class(data$timestamp)
+# Create a new feature which will be used as a key while merging further information
+data$time <- as.Date(format(data$timestamp, "%Y/%m/%d"))
+
+
+# Extract year, month, day, and hour
+data$year <- year(data$timestamp)
+data$month <- month(data$timestamp)
+data$day <- day(data$timestamp)
+data$hour <- hour(data$timestamp)
+
+```
+
+
+In below we add a new feature called "forecast_ma_6" which basically includes the Moving Average forecast with 6 records of each stock price. If there are no previous 6 records in the current record, then its forecast will be set as its original price. We except that this new feature contributes while learning algorithms 
+
+```{r feature engineering v1.5, message=FALSE, warning=FALSE}
+
+
+stock_symbols <- c(
+  "THYAO", "AKBNK", "ARCLK", "ASELS", "BIMAS", "DOHOL", "EKGYO", "EREGL", "FROTO", "GUBRF",
+  "GARAN", "KRDMD", "KCHOL", "KOZAL", "KOZAA", "PGSUS", "PETKM", "SAHOL", "SASA", "SISE",
+  "TAVHL", "TKFEN", "TUPRS", "TTKOM", "TCELL", "HALKB", "ISCTR", "VAKBN", "VESTL", "YKBNK"
+)
+
+add_forecast_column <- function(data) {
+  data <- data %>%
+    arrange(time) %>%
+    mutate(`forecast_ma_6` = ifelse(row_number() < 7, price,
+                                     (lag(price, 1) + lag(price, 2) + lag(price, 3) +
+                                        lag(price, 4) + lag(price, 5) + lag(price, 6)) / 6))
+  return(data)
+}
+
+# Apply the function for each stock symbol
+result_list <- lapply(stock_symbols, function(symbol) {
+  symbol_data <- data %>% filter(short_name == symbol)
+  symbol_data <- add_forecast_column(symbol_data)
+  return(symbol_data)
+})
+
+# Combine the results into a single data frame
+data <- bind_rows(result_list)
+
+# Moving price column to the last place of dataframe.
+data <- data[, c(setdiff(names(data), "price"), "price")]
+
+head(data,8)
+```
+
+We are going to use the `quantmod` library to extract related-meaningful information about our 30 stocks such as volume of the stock for a day. We will analyze whether these extracted features contribute our models or not. 
+
+Basically, `quantmod` is an R package that provides a framework for quantitative financial modeling and trading. It provides a rapid prototyping environment that makes modeling easier by removing the repetitive workflow issues surrounding data management and visualization. 
+
+Again, for the specified 30 stocks, start_date and end_date (must be t + 1 since it accepts as exclusive rhs), we are going to extract the information about stocks such as open, close prices, volume etc. 
+
+Also, since the `quantmod` library does not allow us to fetch hourly data more than 7 days, we move on with the daily average volume data of stocks. 
+
+% Note that end_date must be updated after new data has been obtained. 
+
+```{r feature engineering v2, message=FALSE, warning=FALSE}
+# Specify the start and end dates
+start_date <- as.Date("2018-01-02")
+end_date <- as.Date("2023-11-22")
+
+# Create an empty data frame to store the data
+all_stock_data <- data.frame()
+
+# Loop through each stock symbol and retrieve data
+for (stock_symbol in stock_symbols) {
+  # Append ".IS" to the stock symbol
+  full_symbol <- paste0(stock_symbol, ".IS")
+  
+  # Download stock data
+  getSymbols(full_symbol, src = "yahoo", from = start_date, to = end_date)
+  
+  # Extract hourly data for the specified time range
+  hourly_data <- to.hourly(get(full_symbol))
+  
+  # Append the data to the 'all_stock_data' data frame
+  all_stock_data <- rbind(all_stock_data, data.frame(Symbol = stock_symbol, hourly_data))
+}
+
+# Remove the prefix "get.full_symbol.." from column names
+cleaned_colnames <- gsub("^get.*\\.", "", colnames(all_stock_data))
+colnames(all_stock_data) <- cleaned_colnames
+
+all_stock_data$Date <- as.Date(rownames(all_stock_data))
+# Print the first few rows of the combined data
+head(all_stock_data)
+
+```
+
+Now, we have obtained the 30 stocks' information between start and end dates. Since we have the 10-hour information of stock prices, we can use the `volume` information.
+
+To add the volume information to our previous main data, we can use merge() function since there are significant number of records, it would be extremely efficient. Let's merge them on stock_name and the date (ex. 2022-11-10). Also, we are going to eliminate some of the features such as time from the merged final dataframe.
+
+Moreover, we do not want missing or anomaly volume values in our dataframe. As can be seen below, there are no missing values, luckily. But, we have seen that all stock's volumes are 0 in a specific day (The day that COVID starts in Turkey). Thus, we are going to eliminate the records whose volume is 0 to inhibit the bias. 
+
+```{r feature engineering v3, message=FALSE, warning=FALSE}
+
+# Merge the two dataframes based on the 'short_name' and 'Date' columns
+merged_data <- merge(data, all_stock_data[, c("Symbol", "Volume", "Date")], 
+                     by.x = c("short_name", "time"), by.y = c("Symbol", "Date"), all.x = TRUE)
+
+# Rename the merged 'Volume' column to 'volume' in the 'data' dataframe
+merged_data <- rename(merged_data, volume = Volume)
+merged_data <- merged_data %>% arrange(short_name, timestamp)
+
+final_data <- merged_data %>%
+  select(timestamp, short_name, year, month, day, hour, volume,"forecast_ma_6", price)
+
+head(final_data)
+
+colSums(sapply(all_stock_data, is.na))
+
+final_data <- final_data %>%
+  filter(volume != 0)
+
+head(final_data,8)
+colSums(sapply(final_data, is.na))
+```
+
+`volume` is successfully added to the final dataframe, also "Year,Month,Day,Hour" info are extracted from the timestamp feature. There are no missing values. We are ready to move on.
+
+In this part, we need to create 30 different dataframe from the main dataframe since each analysis & modelling will be performed independently from another stock. Thus, we will be using these stocks separately. 
+
+```{r feature engineering v4, message=FALSE, warning=FALSE}
+
+thyao_data <- final_data %>% filter(short_name == "THYAO")
+akbnk_data <- final_data %>% filter(short_name == "AKBNK")
+arclk_data <- final_data %>% filter(short_name == "ARCLK")
+asels_data <- final_data %>% filter(short_name == "ASELS")
+bimas_data <- final_data %>% filter(short_name == "BIMAS")
+dohol_data <- final_data %>% filter(short_name == "DOHOL")
+ekgyo_data <- final_data %>% filter(short_name == "EKGYO")
+eregl_data <- final_data %>% filter(short_name == "EREGL")
+froto_data <- final_data %>% filter(short_name == "FROTO")
+gubrf_data <- final_data %>% filter(short_name == "GUBRF")
+garan_data <- final_data %>% filter(short_name == "GARAN")
+krdmd_data <- final_data %>% filter(short_name == "KRDMD")
+kchol_data <- final_data %>% filter(short_name == "KCHOL")
+kozal_data <- final_data %>% filter(short_name == "KOZAL")
+kozaa_data <- final_data %>% filter(short_name == "KOZAA")
+pgsus_data <- final_data %>% filter(short_name == "PGSUS")
+petkm_data <- final_data %>% filter(short_name == "PETKM")
+sahol_data <- final_data %>% filter(short_name == "SAHOL")
+sasa_data <- final_data %>% filter(short_name == "SASA")
+sise_data <- final_data %>% filter(short_name == "SISE")
+tahvl_data <- final_data %>% filter(short_name == "TAVHL")
+tkfen_data <- final_data %>% filter(short_name == "TKFEN")
+tuprs_data <- final_data %>% filter(short_name == "TUPRS")
+ttkom_data <- final_data %>% filter(short_name == "TTKOM")
+tcell_data <- final_data %>% filter(short_name == "TCELL")
+halkb_data <- final_data %>% filter(short_name == "HALKB")
+isctr_data <- final_data %>% filter(short_name == "ISCTR")
+vakbn_data <- final_data %>% filter(short_name == "VAKBN")
+vestl_data <- final_data %>% filter(short_name == "VESTL")
+ykbnk_data <- final_data %>% filter(short_name == "YKBNK")
+```
+
+### Descriptive Analysis
+In this part, we are going to understand and analyze the data more by using summary, aggregated functions, sense visualizations etc. 
+
+We have data with one POSIX, one CHR and rest either int or num features, which is nice to user. And by looking at the statistical metrics, there are no obvious anomaly/extreme value in the data. 
+
+Let's also plot some visualizations to understand or demonstrate data more. Stock Price Distribution as a boxplot and average price by months in years are also shown below.
+
+```{r Descriptive Analysis, message=FALSE, warning=FALSE}
+
+dim(final_data)
+
+str(final_data)
+
+summary(final_data)
+
+ggplot(final_data, aes(x = short_name, y = price, fill = short_name)) +
+  geom_boxplot() +
+  labs(title = "Stock Price Distribution",
+       x = "Stock",
+       y = "Price") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+average_price_by_month <- aggregate(price ~ month + year, data = final_data, mean)
+
+ggplot(average_price_by_month, aes(x = month, y = price, fill = factor(year))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Average Stock Price by Month",
+       x = "Month",
+       y = "Average Price") +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+
+We have write a function detecting anomaly in the plots. Anomaly is detected in date, if the value is less or grater than the mean (data) +- 3 * stdev(data). There are 5 example stock prices plots to detect anomalies. None of them included any anomaly values (Rest of them are also controlled). This is also a good sign for us to create sense models.
+
+```{r Descriptive Analysis v1, message=FALSE, warning=FALSE}
+
+plot_anomaly <- function(df){
+  anomaly_threshold_price <-  mean(df$price) - 3 * sqrt(var(df$price)) # Adjust this threshold as needed
+  anomaly_values_price <- df$price < anomaly_threshold_price
+  
+  stock_title <- paste(df$short_name[1],"Stock Prices Over Time with Anomalies", sep = " ")
+  
+  ggplot(df, aes(x = timestamp, y = price)) +
+    geom_line() +
+    geom_point(data = df[anomaly_values_price, ], aes(color = "Anomaly"), size = 3) +
+    labs(x = "Datetime", y = "Stock Closing Prices", title = stock_title) +
+    scale_color_manual(values = c("Anomaly" = "red")) +
+    theme_minimal()
+}
+plot_anomaly(thyao_data)
+plot_anomaly(akbnk_data)
+plot_anomaly(vestl_data)
+plot_anomaly(froto_data)
+plot_anomaly(sise_data)
+```
+
+Finally, using quantmod library and its functionalities lets look at the visualizations of example stocks information such as THYAO.IS and SISE.IS. These candlestick and line plots are helpful for further analysis also since we get insight how current volume affects further stock price etc.
+
+Also, all stock prices are plotted as single plot in below. It can be seen that some of the stocks have multiplied prices accross many and we think that the splitting dataset as different stocks might be good idea to block any negative effects.
+
+```{r Descriptive Analysis v2, message=FALSE, warning=FALSE}
+
+# Plot candlestick chart for one stock (e.g., THYAO, SISE)
+thYaoData <- getSymbols("THYAO.IS", src = "yahoo", from = "2018-01-02", to = "2023-11-22", auto.assign = FALSE)
+candleChart(thYaoData, theme = "white")
+
+siseData <- getSymbols("SISE.IS", src = "yahoo", from = "2018-01-02", to = "2023-11-22", auto.assign = FALSE)
+candleChart(siseData, theme = "white")
+
+ggplot(all_stock_data, aes(x = Date, y = Close, color = Symbol)) +
+  geom_line() +
+  labs(title = "Closing Prices Over Time for Selected Stocks",
+       x = "Date",
+       y = "Closing Price",
+       color = "Stock Symbol") +
+  theme_minimal()
+
+```
+
+Let's also analyze the data by applying clustering methods. It will help us to see which stocks are similar to each other in terms of distance. 
+
+### Clustering Analysis 
+
+Clustering is the task of dividing the population or data points into a number of groups such that data points in the same groups are more similar to other data points in the same group and dissimilar to the data points in other groups. It is basically a collection of objects on the basis of similarity and dissimilarity between them.
+
+In this dataset, we can obtain insights about which stocks are similar etc.
+
+Let's start with k means clustering : 
+
+```{r clustering v1, message=FALSE, warning=FALSE}
+
+cluster_data <- final_data
+
+features <- cluster_data[, c("volume", "forecast_ma_6", "price")]
+
+# Scale the features
+scaled_features <- scale(features)
+
+# Choose the number of clusters (k)
+k <- 4
+
+# Apply k-means clustering
+kmeans_result <- kmeans(scaled_features, centers = k, nstart = 25)
+
+# Add the cluster labels to your data
+cluster_data$cluster <- as.factor(kmeans_result$cluster)
+
+head(cluster_data)
+
+
+# Scatter plot in 3D
+plot_ly(cluster_data, x = ~volume, y = ~`forecast_ma_6`, z = ~price, color = ~cluster,
+        text = ~short_name,  # This adds stock names as labels
+        type = "scatter3d", mode = "markers", marker = list(size = 5)) %>%
+  layout(scene = list(xaxis = list(title = "Volume"),
+                      yaxis = list(title = "forecast_ma_6"),
+                      zaxis = list(title = "Price"),
+                      margin = list(l = 0, r = 0, b = 0, t = 0)))
+
+fviz_cluster(kmeans_result, data = cluster_data[, c("volume", "price")])
+```
+
+```{r clustering v2, message=FALSE, warning=FALSE}
+set.seed(10)  # Set seed for reproducibility
+sample_size <- 40  # Adjust the sample size as needed
+subset_data <- cluster_data[sample(1:nrow(cluster_data), sample_size), 
+                            c("short_name","volume", "forecast_ma_6", "price")]
+normalized_data <- scale(subset_data[, -1])
+
+distance_matrix <- dist(normalized_data, method = "euclidean")
+hierarchical_cluster <- hclust(distance_matrix, method = "average")
+clusters <- cutree(hierarchical_cluster, k = 5)  # You can adjust the number of clusters (k) as needed,
+dend <- as.dendrogram(hierarchical_cluster)
+
+# Plot the hierarchical clustering with factoextra
+fviz_dend(dend, k = 5, main = "Hierarchical Clustering Dendrogram")
+```
+
+It can be seen that some stocks are stored in same clusters with minimum distances:
+
+- VKBANK and HLKBNK 
+
+- THYAO, SISE, SASA, EREGL
+
+- ASELS, TUPRS, YKBANK, AKBANK
+
+These stocks can be used to predict the price trend of each other.
+
+We are ready to move on with the modelling part of the report.
+
+## Machine Learning / Data Mining Models
+
+We have completed the preprocessing, feature engineering, cleaning and the overall descriptive analysis part of the work. Now, we are going to use different kind of machine learning and statistical models to predict the future forecasts well.
+
+We plan to implement 4 main models in our work :
+
+- Decision Tree Algorithm
+
+- Random Forest Algorithm
+
+- Gradient Boosting Machines (GBM)
+
+- ARIMA (AutoRegressive Integrated Moving Average)
+
+
+Note that our main metric will be Weighted Mean Absolute Percentage Error (WMAPE) which is a measure used to evaluate the accuracy of forecast models. This metric provides a normalized error rate across all predictions, allowing for a fair comparison between different forecasting models or different data sets.
+
+In this report, we will be analyzing a stock to select the best model for predictions. But in our work, we test with multiple stocks to get balanced information. We are going to use "THYAO" stock as a sample stock. 
+
+Let's start with the Decision Tree Algorithm.
+
+
+### Decision Tree Algorithm
+
+In order not to mutate the original data, we copy it and split it into training and test dataset which will be used in modeling and testing respectively. 
+
+```{r dt v1, message=FALSE, warning=FALSE}
+dt_thyao_data <- thyao_data
+
+validationIndex <- createDataPartition(dt_thyao_data$price, p=0.70, list=FALSE)
+
+dt_train <- dt_thyao_data[validationIndex,] # 70% of data to training
+dt_test <- dt_thyao_data[-validationIndex,]
+
+cat("Dimension of the main dataset:",dim(dt_thyao_data))
+cat("Dimension of the train dataset:",dim(dt_train))
+cat("Dimension of the test dataset:",dim(dt_test))
+```
+
+Dataset is ready to be learned and now we are going to implement a manual cross validation to tune the hyperparameters for the decision tree and we are going to look at its MSE value in each iteration. 
+
+Assuming the tuning hyperparameter will be only the minimal number of observations per tree leaf. Setting complexity parameter to zero and minimum number of observations to split as the twice as the minimal number of observations per tree leaf.
+
+In the end, we are going to store them in df to find the best model. 
+```{r dt v2, message=FALSE, warning=FALSE}
+cv_results <- data.frame(minbucket = numeric(), RMSE = numeric())
+
+set.seed(10)
+
+# Define a range of minsplit values to try
+minbucket_values <- c(1, 5, 10, 15, 20) 
+
+# Perform cross-validation for each minbucket value
+for (minbucket_val in minbucket_values) {
+  # Create a decision tree regression model with the current minbucket value
+  tree_model <- rpart(price~.,dt_train,method='anova',
+                      control=rpart.control(cp=0, minbucket = minbucket_val, minsplit = 2*minbucket_val))
+  
+  predictions <- predict(tree_model, newdata = dt_train)
+  
+  true_values <- dt_train$price
+  
+  rmse <- round(sqrt(mean((predictions - true_values)^2)),3)
+  
+  # Store the results in the data frame
+  cv_results <- rbind(cv_results, data.frame(minbucket = minbucket_val, RMSE = rmse))
+}
+
+ggplot(cv_results, aes(x = minbucket, y = RMSE)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "RMSE vs. MinBucket",
+       x = "minbucket",
+       y = "RMSE") +
+  theme_minimal()
+```
+
+Least MSE belongs to the `minbucket` = 1 but the this model poorly performs in the test dataset. It seems that overfitting occurs. On the other hand, `minbucket` = 5 performs well both in training and test dataset. Looks like the model with `minbucket` = 5 is the best model in terms of RMSE.  
+
+In below, we have created the best model with corresponding hyperparameters and some visualizations are plotted.
+
+```{r dt v3, message=FALSE, warning=FALSE}
+minbucket_val <- 5
+best_tree_model <- rpart(price~.,dt_train,method='anova',
+                         control=rpart.control(cp=0, minbucket = minbucket_val, minsplit = 2*minbucket_val))
+
+fancyRpartPlot(best_tree_model)
+
+barplot(best_tree_model$variable.importance,horiz=F)
+```
+
+Lets look at its other regression metrics such as MAE, RMSE, MAPE etc. Also predicted vs. actual plot can be seen: 
+
+```{r dt v4, message=FALSE, warning=FALSE}
+# Make predictions on the test set
+predictions <- predict(best_tree_model, newdata = dt_test)
+# True values from the test set
+true_values <- dt_test$price
+
+# Calculate Mean Absolute Error (MAE)
+mae <- mean(abs(predictions - true_values))
+print(paste("Mean Absolute Error (MAE):", mae))
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse <- round(sqrt(mean((predictions - true_values)^2)),3)
+print(paste("Root Mean Squared Error (RMSE):", rmse))
+
+# Calculate Mean Absolute Percentage Error (MAPE)
+mape <- mean(abs((predictions - true_values) / true_values) * 100, na.rm = TRUE)
+cat("Mean Absolute Percentage Error (MAPE):", mape, "\n")
+
+calculate_wmape <- function(actual, forecasted) {
+  n <- length(actual)
+  wmape <- (sum(abs(actual - forecasted)) / sum(abs(actual))) * 100
+  return(wmape)
+}
+
+# Calculate Weighted Mean Absolute Percentage Error (WMAPE)
+wmape <- calculate_wmape(predictions, true_values)
+print(paste("Weighted Mean Absolute Percentage Error (WMAPE):", wmape))
+
+# Calculate R-squared (R²)
+sse <- sum((predictions - true_values)^2)
+sst <- sum((true_values - mean(true_values))^2)
+rsquared <- 1 - (sse / sst)
+print(paste("R-squared (R²):", rsquared))
+
+# Create a scatterplot
+plot(true_values, predictions, 
+     main = "Predictions vs Actual Data",
+     xlab = "True Values",
+     ylab = "Predicted Values",
+     pch = 16,  # Set the point character
+     col = "blue"  # Set the point color
+)
+
+# Add a diagonal line for reference
+abline(0, 1, col = "red", lty = 2)
+
+# Add a legend
+legend("topright", legend = "Diagonal Line (Reference)", col = "red", lty = 2, cex = 0.8)
+```
+
+It is extremely successful with the test dataset also, but it might get overfit by the complex model since Decision Trees tend to overfit easily.
+
+Let's move on with Random Forest.
+
+
+### Random Forest Algorithm
+
+In order not to mutate the original data, we copy it and split it into training and test dataset which will be used in modeling and testing respectively. 
+
+```{r rf v1, message=FALSE, warning=FALSE}
+rf_thyao_data <- thyao_data
+validationIndex <- createDataPartition(rf_thyao_data$price, p=0.70, list=FALSE)
+
+rf_train <- rf_thyao_data[validationIndex,] # 70% of data to training
+rf_test <- rf_thyao_data[-validationIndex,]
+
+cat("Dimension of the main dataset:",dim(rf_thyao_data))
+cat("Dimension of the train dataset:",dim(rf_train))
+cat("Dimension of the test dataset:",dim(rf_test))
+```
+
+Dataset is ready to be learned and now we are going to implement a manual cross validation to tune the hyperparameters for the random forest and we are going to look at its error value in each iteration. 
+
+Assuming the tuning hyperparameter will be only the effect of the ratio of the number of features evaluated at each split (mtry) and setting other parameters as J=500 and the minimal number of observations per tree leaf=5.
+
+In the end, we are going to store them in table to find the best model.
+
+```{r rf v2, message=FALSE, warning=FALSE}
+set.seed(10)
+# Set the number of trees and nodesize
+num_trees <- 500
+min_obs_per_leaf <- 5
+
+# Create a grid of mtry values to explore
+mtry_values <- c(2, 4, 6, 8, 10)  # Add more values as needed
+
+# Create an empty data frame to store results
+rf_results <- data.frame(mtry = numeric(), RMSE = numeric())
+
+# Perform grid search
+for (m in mtry_values) {
+  # Train the Random Forest model
+  rf_model <- randomForest(price ~ ., data = rf_train, 
+                           ntree = num_trees, nodesize = min_obs_per_leaf, mtry = m)
+  
+  # Make predictions on the training set
+  predictions <- predict(rf_model, newdata = rf_train)
+  
+  true_values <- rf_train$price
+  
+  rmse <- round(sqrt(mean((predictions - true_values)^2)),3)
+  
+  # Store the results in the data frame
+  rf_results <- rbind(rf_results, data.frame(mtry = m, RMSE = rmse))
+}
+
+# Print the results
+print(rf_results)
+
+ggplot(rf_results, aes(x = mtry, y = RMSE)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "RMSE vs. mtry",
+       x = "mtry",
+       y = "RMSE") +
+  theme_minimal()
+```
+
+Looks like the model converges when `mtry` = 4 (given `ntree` = 500 & `nodesize` = 5) is the best model in terms of RMSE, lets also analyze the other metrics using test dataset.
+
+
+
+In below, we have created the best model with corresponding hyperparameters and metrics with test data are listed. 
+
+```{r rf v3, message=FALSE, warning=FALSE}
+set.seed(10)
+
+best_rf_model <- randomForest(price ~ ., data = rf_train, 
+                              ntree = num_trees, nodesize = min_obs_per_leaf, mtry = 4)
+
+# Make predictions on the test set
+predictions <- predict(best_rf_model, newdata = rf_test)
+
+# True values from the test set
+true_values <- rf_test$price
+
+# Calculate Mean Absolute Error (MAE)
+mae <- mean(abs(predictions - true_values))
+print(paste("Mean Absolute Error (MAE):", mae))
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse <- round(sqrt(mean((predictions - true_values)^2)),3)
+print(paste("Root Mean Squared Error (RMSE):", rmse))
+
+# Calculate Mean Absolute Percentage Error (MAPE)
+mape <- mean(abs((predictions - true_values) / true_values) * 100, na.rm = TRUE)
+cat("Mean Absolute Percentage Error (MAPE):", mape, "\n")
+
+# Calculate Weighted Mean Absolute Percentage Error (WMAPE)
+wmape <- calculate_wmape(predictions, true_values)
+print(paste("Weighted Mean Absolute Percentage Error (WMAPE):", wmape))
+
+# Calculate R-squared (R²)
+sse <- sum((predictions - true_values)^2)
+sst <- sum((true_values - mean(true_values))^2)
+rsquared <- 1 - (sse / sst)
+print(paste("R-squared (R²):", rsquared))
+```
+
+It can be seen that random forest performed also very well on this dataset. Moreover, the possibility for overfitting the random forest model is much less than the decision trees since it is using bootstrap aggregating technique. 
+
+Let's also make some visualizations on the grey-box random forest model.
+
+```{r rf v4, message=FALSE, warning=FALSE}
+# Plot variable importance
+varImpPlot(best_rf_model)
+
+# Create partial dependence plot
+partial_plot <- partial(best_rf_model, pred.var = 'year', data = dt_test)
+
+# Plot the partial dependence plot
+plot(partial_plot)
+```
+
+
+Let's move on with the third algorithm which is ARIMA. 
+
+### ARIMA (AutoRegressive Integrated Moving Average)
+
+In order not to mutate the original data, we copy it and split it into training and test dataset which will be used in modeling and testing respectively. 
+
+```{r arima v1, message=FALSE, warning=FALSE}
+arima_thyao_data <- thyao_data
+validationIndex <- createDataPartition(arima_thyao_data$price, p=0.70, list=FALSE)
+
+arima_train <- arima_thyao_data[validationIndex,] # 70% of data to training
+arima_test <- arima_thyao_data[-validationIndex,]
+
+cat("Dimension of the main dataset:",dim(arima_thyao_data))
+cat("Dimension of the train dataset:",dim(arima_train))
+cat("Dimension of the test dataset:",dim(arima_test))
+```
+
+Let's prepare the timeseriers data as 10-hours frequency, fit the ARIMA model using auto.arima function and plot. 
+
+```{r arima v2, message=FALSE, warning=FALSE}
+# frequency is 10 since we have 10-hours data for each stock and day.
+ts_data <- ts(arima_train$price, frequency = 10)
+# plotting time-series data with prices
+plot(ts_data, main = "Time Series Plot")
+
+diff_ts_data <- diff(ts_data)
+# fitting arima model
+arima_model <- auto.arima(ts_data)
+
+checkresiduals(arima_model)
+
+summary(arima_model)
+```
+
+Let's now forecast further along with number of test records.
+
+```{r arima v3, message=FALSE, warning=FALSE}
+forecast_values <- forecast(arima_model, h = nrow(arima_test))  
+plot(forecast_values, main = "ARIMA Forecast")
+combined_data <- data.frame(
+  timestamp = arima_test$timestamp,
+  actual = arima_test$price,
+  forecast_mean = forecast_values$mean,
+  forecast_lower_80 = forecast_values$lower[, "80%"],
+  forecast_upper_80 = forecast_values$upper[, "80%"],
+  forecast_lower_95 = forecast_values$lower[, "95%"],
+  forecast_upper_95 = forecast_values$upper[, "95%"]
+)
+
+ggplot(combined_data, aes(x = timestamp)) +
+  geom_line(aes(y = actual, color = "Actual"), linetype = "solid", size = 1, alpha = 0.8) +
+  geom_line(aes(y = forecast_mean, color = "Forecast"), linetype = "solid", size = 1, alpha = 0.8) +
+  geom_ribbon(aes(ymin = forecast_lower_80, ymax = forecast_upper_80, fill = "80% CI"), alpha = 0.3) +
+  geom_ribbon(aes(ymin = forecast_lower_95, ymax = forecast_upper_95, fill = "95% CI"), alpha = 0.3) +
+  labs(title = "ARIMA Forecast vs Actual",
+       x = "Timestamp",
+       y = "Price") +
+  scale_color_manual(values = c("Actual" = "blue", "Forecast" = "red")) +
+  scale_fill_manual(values = c("80% CI" = "pink", "95% CI" = "orange")) +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+```
+
+Finally, let's look at the metrics of ARIMA model: 
+
+```{r arima v4, message=FALSE, warning=FALSE}
+mae <- mean(abs(forecast_values$mean - arima_test$price))
+mse <- mean((forecast_values$mean - arima_test$price)^2)
+rmse <- sqrt(mse)
+mape <- mean(abs((forecast_values$mean - arima_test$price) / arima_test$price) * 100, na.rm = TRUE)
+wmape <- calculate_wmape(forecast_values$mean, arima_test$price)
+cat("MAE:", mae, "\n")
+cat("MSE:", mse, "\n")
+cat("RMSE:", rmse, "\n")
+cat("MAPE:", mape, "\n")
+cat("WMAPE:", wmape, "\n")
+```
+
+
+Results are not as good as Decision Tree or Random Forest but it does not create complex models even they are simple. So, it might be more beneficial with unseen data when it comes.
+
+Finally, let's also model with Gradient Boosting Machine Algorithm (GBM).
+
+### GBM Algorithm 
+
+In order not to mutate the original data, we copy it and split it into training and test dataset which will be used in modeling and testing respectively. Since GBM could not handle POSIX and single type factor data types, we are removing them from the data. It might result with the lack of info but also less complex model. Let's analyze it.
+
+```{r gbm v1, message=FALSE, warning=FALSE}
+thyao_data_gbm <- thyao_data
+
+thyao_data_gbm <- thyao_data_gbm[, !colnames(thyao_data_gbm) %in% c("short_name","timestamp")]
+
+validationIndex <- createDataPartition(thyao_data_gbm$price, p=0.70, list=FALSE)
+
+gbm_train <- thyao_data_gbm[validationIndex,] # 70% of data to training
+gbm_test <- thyao_data_gbm[-validationIndex,]
+
+cat("Dimension of the main dataset:",dim(thyao_data_gbm))
+cat("Dimension of the train dataset:",dim(gbm_train))
+cat("Dimension of the test dataset:",dim(gbm_test))
+```
+
+In above, there are 2 train & test pairs occur. One will be used in the cross validation and the other will be used to test the best model with tuned parameters.
+
+Let's tune the hyperparameters of the GBM with respect to the "RMSE" value.
+
+We are mainly interested in tuning the depth (interaction.depth), the number of
+trees (n.trees) and the learning rate (shrinkage).
+
+```{r gbm v2, message=FALSE, warning=FALSE}
+set.seed(10)
+
+n_folds=10
+
+fitControl=trainControl(method = "cv",
+                        number = n_folds)
+## gradient boosting
+gbmGrid=expand.grid(interaction.depth = c(3, 5), 
+                    n.trees = c(1:5)*100, 
+                    shrinkage = c(0.05,0.1),
+                    n.minobsinnode = 10)
+set.seed(1)                        
+gbm_fit=train(price ~ ., data = gbm_train, 
+              method = "gbm", 
+              trControl = fitControl, metric='RMSE',
+              tuneGrid = gbmGrid,
+              verbose=F) #verbose is an argument from gbm, prints to screen
+gbm_fit
+
+
+plot(gbm_fit)
+```
+
+Selecting the best model is below: 
+
+Looks like the best GBM model with the parameters (Shrinkage = 0.1, depth = 5, n.trees = 500).
+
+Let's analyze this model with test data finally.
+
+```{r gbm v3, message=FALSE, warning=FALSE}
+noftrees=500
+depth=5
+learning_rate=0.1
+
+boosting_model=gbm(price~., data=gbm_train,distribution = 'gaussian', n.trees = noftrees,
+                   interaction.depth = depth, n.minobsinnode = 10, shrinkage =learning_rate, cv.folds = 10)
+
+gbm.perf(boosting_model, method = "cv")
+
+predictions <- predict(boosting_model, newdata = gbm_test, type = "response")
+
+# True values from the test set
+true_values <- gbm_test$price
+
+# Calculate Mean Absolute Error (MAE)
+mae <- mean(abs(predictions - true_values))
+print(paste("Mean Absolute Error (MAE):", mae))
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse <- round(sqrt(mean((predictions - true_values)^2)),3)
+print(paste("Root Mean Squared Error (RMSE):", rmse))
+
+# Calculate Mean Absolute Percentage Error (MAPE)
+mape <- mean(abs((predictions - true_values) / true_values) * 100, na.rm = TRUE)
+cat("Mean Absolute Percentage Error (MAPE):", mape, "\n")
+
+# Calculate Weighted Mean Absolute Percentage Error (WMAPE)
+wmape <- calculate_wmape(predictions, true_values)
+print(paste("Weighted Mean Absolute Percentage Error (WMAPE):", wmape))
+```
+
+
+It has better results than ARIMA but worse than Decision Tree and Random Forest. But still the results are satisfied eventhough the problem is complex and the information we have is limited. 
+
+Anyway we need unseen data to select the best model for predictions. 
+
+
+
+### Predictions with Selected Model for All Stocks
+
+Assuming that GBM  is the selected model and lets do the predictions on the created new data 
+
+```{r further predictions v1, message=FALSE, warning=FALSE}
+# List of stock names
+stock_names <- c("THYAO", "AKBNK", "ARCLK", "ASELS", "BIMAS", "DOHOL", "EKGYO", "EREGL", "FROTO", "GUBRF",
+                 "GARAN", "KRDMD", "KCHOL", "KOZAL", "KOZAA", "PGSUS", "PETKM", "SAHOL", "SASA", "SISE",
+                 "TAVHL", "TKFEN", "TUPRS", "TTKOM", "TCELL", "HALKB", "ISCTR", "VAKBN", "VESTL", "YKBNK")
+
+# Function to generate new data for each stock
+generate_new_data <- function(stock_name) {
+  last_timestamp <- max(final_data$timestamp[final_data$short_name == stock_name])
+  last_datetime <- as.POSIXct(last_timestamp)
+  
+  # Increase last_datetime by one day
+  last_datetime <- last_datetime + days(1)
+  
+  # Extract date part
+  last_date <- format(last_datetime, "%Y-%m-%d")
+  
+  # Combine with 09:00
+  start_datetime <- as.POSIXct(paste(last_date, "09:00:00"))
+  
+  # Generate new timestamps starting from the next day of the last record, between 9:00 and 18:00
+  new_timestamps <- seq.POSIXt(from = start_datetime, 
+                               by = "1 hour", length.out = 10)
+  
+  # Extract year, month, day, and hour
+  new_data <- data.frame(
+    timestamp = new_timestamps,
+    short_name = rep(stock_name, 10),
+    year = format(new_timestamps, "%Y"),
+    month = format(new_timestamps, "%m"),
+    day = format(new_timestamps, "%d"),
+    hour = format(new_timestamps, "%H"),
+    volume = rep(71142665, 10),
+    forecast_ma_6 = rep(NA, 10),
+    price = rep(NA, 10)
+  )
+  
+  return(new_data)
+}
+
+# List to store new data for each stock
+new_data_list <- list()
+
+# Generate new data for each stock
+for (stock_name in stock_names) {
+  new_data <- generate_new_data(stock_name)
+  new_data_list[[length(new_data_list) + 1]] <- new_data
+}
+
+# Combine new data for all stocks into a single dataframe
+new_data_df <- do.call(rbind, new_data_list)
+
+head(new_data_df,10)
+```
+
+Filling the forecast_ma_6 of new_data column with using the previous data for each stock.
+
+```{r further predictions v2, message=FALSE, warning=FALSE}
+# Function to fill forecast_ma_6 column for each stock in new_data_df
+fill_forecast_ma_6 <- function(stock_name, new_data_df, original_data) {
+  # Filter original data for the specific stock
+  stock_data <- original_data[original_data$short_name == stock_name, ]
+  
+  # Set initial values for the moving average calculation
+  window_size <- 6
+  forecast_column <- "forecast_ma_6"
+  
+  # Iterate over rows in new_data_df for the current stock
+  for (i in which(new_data_df$short_name == stock_name)) {
+    # Extract relevant information from new_data_df
+    timestamp <- new_data_df$timestamp[i]
+    
+    # Filter previous records from stock_data for the current stock
+    previous_records <- stock_data[stock_data$timestamp < timestamp, ]
+    
+    # Calculate moving average forecast
+    if (nrow(previous_records) >= window_size) {
+      # Use mean to calculate the average iteratively
+      new_data_df[i, forecast_column] <- mean(tail(previous_records[, forecast_column], window_size))
+      
+      # Append a new record to stock_data
+      new_record <- tail(previous_records, 1)
+      new_record$timestamp <- timestamp
+      new_record[, forecast_column] <- new_data_df[i, forecast_column]
+      stock_data <- rbind(stock_data, new_record)
+    }
+  }
+  
+  return(new_data_df)
+}
+# Iterate over each stock to fill forecast_ma_6 in new_data_df
+for (stock_name in stock_names) {
+  new_data_df <- fill_forecast_ma_6(stock_name, new_data_df, final_data)
+}
+
+head(new_data_df,10)
+```
+
+Now, we have the data let's do the predictions for all 30 stocks. 
+
+```{r further predictions v3, message=FALSE, warning=FALSE}
+set.seed(10)
+noftrees=500
+depth=5
+learning_rate=0.1
+# Function to train random forest model and calculate performance metrics
+train_and_evaluate_rf_model <- function(stock_data) {
+  stock_name <- unique(stock_data$short_name)
+  
+  stock_data <- stock_data[, !colnames(stock_data) %in% c("short_name","timestamp")]
+
+  validationIndex <- createDataPartition(stock_data$price, p=0.70, list=FALSE)
+  
+  gbm_train <- stock_data[validationIndex,] # 70% of data to training
+  gbm_test <- stock_data[-validationIndex,]
+  
+  #ts_data <- ts(stock_data$price, frequency = 10)
+
+  #arima_model <- auto.arima(ts_data)
+  
+  #predictions <- forecast(arima_model, h = nrow(gbm_test))
+  
+  # Train GBM model
+  boosting_model=gbm(price~., data=gbm_train,distribution = 'gaussian', n.trees = noftrees,
+                   interaction.depth = depth, n.minobsinnode = 10, shrinkage =learning_rate, cv.folds = 10)
+  
+  # Make predictions on test data
+  predictions <- predict(boosting_model, newdata = gbm_test, type = "response")
+  
+  # Calculate performance metrics
+  mae <- mae(predictions, gbm_test$price)
+  mape <- mape(predictions, gbm_test$price)
+  rmse <- rmse(predictions, gbm_test$price)
+  wmape <- calculate_wmape(gbm_test$price, predictions)
+  #mae <- mae(predictions$mean, gbm_test$price)
+  #mape <- mape(predictions$mean, gbm_test$price)
+  #rmse <- rmse(predictions$mean, gbm_test$price)
+  #wmape <- calculate_wmape(gbm_test$price, predictions$mean)
+  
+  # Create a data frame to store performance metrics
+  performance_df <- data.frame(StockName = stock_name, MAE = mae, RMSE = rmse, MAPE = mape, WMAPE = wmape)
+  
+  further_data <- new_data_df%>% filter(short_name == stock_name)
+  # Predictions for further day
+  further_predictions <- predict(boosting_model, newdata = further_data, type = "response")
+  #further_predictions <- forecast(arima_model, h = nrow(further_data))
+
+  assign(paste0("pred_", stock_name), further_predictions, envir = .GlobalEnv)
+  
+  return(performance_df)
+}
+
+# List to store performance metrics for each stock
+performance_list <- list()
+
+# List of stock data tables
+stock_data_list <- list(thyao_data, akbnk_data, arclk_data, asels_data, bimas_data,
+                        dohol_data, ekgyo_data, eregl_data, froto_data, gubrf_data,
+                        garan_data, krdmd_data, kchol_data, kozal_data, kozaa_data,
+                        pgsus_data, petkm_data, sahol_data, sasa_data, sise_data,
+                        tahvl_data, tkfen_data, tuprs_data, ttkom_data, tcell_data,
+                        halkb_data, isctr_data, vakbn_data, vestl_data, ykbnk_data)
+
+# Train, evaluate, and store performance metrics for each stock
+for (stock_data in stock_data_list) {
+  performance_df <- train_and_evaluate_rf_model(stock_data)
+  performance_list[[length(performance_list) + 1]] <- performance_df
+}
+
+# Combine performance metrics for all stocks into a single dataframe
+all_performance_df <- do.call(rbind, performance_list)
+
+all_performance_df
+
+ggplot(all_performance_df, aes(x = StockName)) +
+  geom_bar(aes(y = MAE), fill = "blue", stat = "identity", position = "dodge") +
+  geom_bar(aes(y = RMSE), fill = "green", stat = "identity", position = "dodge") +
+  geom_bar(aes(y = MAPE), fill = "orange", stat = "identity", position = "dodge") +
+  geom_bar(aes(y = WMAPE), fill = "red", stat = "identity", position = "dodge") +
+  labs(title = "Performance Metrics by Stock",
+       x = "Stock Name",
+       y = "Value") +
+  theme_minimal()
+
+# Scatter plot for MAE and RMSE
+ggplot(all_performance_df, aes(x = MAE, y = RMSE, color = StockName)) +
+  geom_point() +
+  labs(title = "Scatter Plot of MAE vs RMSE",
+       x = "Mean Absolute Error (MAE)",
+       y = "Root Mean Squared Error (RMSE)") +
+  theme_minimal()
+```
+
+### Stock Prices Submission Generator
+Since we are going to submit our predictions through Google Forms as a pre-defined format. We wrote a function that creates this predictions submission format. It iteratively adds prediction (e.g. pred_THYAO, pred_SISE etc.) to a key as stock name in a dictionary.
+
+```{r submission generator v1, message=FALSE, warning=FALSE}
+stock_submission_generator <- function(stock_names) {
+  # Create a list to store the predictions
+  prediction_list <- list()
+  
+  # Iterate over each stock name
+  for (stock_name in stock_names) {
+    # Clean up the stock name to make it a valid R variable name
+    cleaned_stock_name <- gsub("[^A-Za-z0-9_]", "_", stock_name)
+    
+    # Get the predicted values directly (no need for dynamic variable names)
+    prediction_values <- get(paste0("pred_", cleaned_stock_name))
+    
+    # Store the results in the list
+    prediction_list[[cleaned_stock_name]] <- prediction_values
+  }
+  # Combine the results into a named list
+    result <- paste0("{", paste(lapply(names(prediction_list), function(stock_name) {
+      paste0("'", stock_name, "': [", paste(prediction_list[[stock_name]], collapse = ", "), "]")
+    }), collapse = ","), "}")
+  
+  return(result)
+}
+
+# Example usage
+stock_names <- c("THYAO", "AKBNK", "ARCLK", "ASELS", "BIMAS", "DOHOL", "EKGYO", "EREGL", "FROTO", "GUBRF",
+                 "GARAN", "KRDMD", "KCHOL", "KOZAL", "KOZAA", "PGSUS", "PETKM", "SAHOL", "SASA", "SISE",
+                 "TAVHL", "TKFEN", "TUPRS", "TTKOM", "TCELL", "HALKB", "ISCTR", "VAKBN", "VESTL", "YKBNK")
+
+# Call the function with the stock names and their respective predictions
+submission_result <- stock_submission_generator(stock_names)
+
+cat(submission_result)
+```
+
+
+### Calculating Next Day's Expected Volume
+
+Since Yahoo Finance Library enables volume information of stocks until day t and we need to predict next days' stock prices. We have written a function that returns the excepted volume of a specific stock of the next day. It basically, aggregates 50 previous days and returns the calculate of their average volume.
+
+
+```{r expected volume v1, message=FALSE, warning=FALSE}
+calculate_next_day_expected_volume <- function(stock_name){
+  
+  test <- final_data %>% filter(short_name == stock_name)
+  
+  expected_nextday_volume <- round(mean(tail(test$volume, 50)))
+  
+  day <- tail(test$timestamp,1)
+  
+  timestamp <- ymd_hms(day, tz = "UTC")
+  
+  # Increment the date by 1 day and floor it to remove hours
+  next_day <- floor_date(timestamp + days(1), unit = "days")
+  
+  cat("Volume for the stock",stock_name," for the day ",format(next_day, "%Y-%m-%d"),"is :", expected_nextday_volume)
+  
+}
+
+calculate_next_day_expected_volume("THYAO")
+calculate_next_day_expected_volume("AKBNK")
+calculate_next_day_expected_volume("ARCLK")
+calculate_next_day_expected_volume("FROTO")
+```
+
+
+### Predicting Stock Prices with Unseen Data
+
+In this part, we are going to see that how well our selected model predicts the unseen next day's stock price.
+
+```{r pred unseen v1, message=FALSE, warning=FALSE}
+new_data <- data.frame(
+  timestamp = seq(as.POSIXct("2023-12-12 09:00:00"), by = "hour", length.out = 5),
+  short_name = rep("THYAO", 5),
+  year = c(2018, 2018, 2018, 2018, 2018),
+  month = c(1, 1, 1, 1, 1),
+  day = c(2, 2, 2, 2, 2),
+  hour = c(9, 10, 11, 12, 13),
+  volume = rep(36869621 , 5),
+  forecast_ma_6 = c(260.2, 260.8, 265.2, 262.5, 265),
+  price = c(261.5, 262.4, 263.7, 264, 263)
+)
+
+new_data$year[1:5] <- 2023
+new_data$month[1:5] <- 12
+new_data$day[1:5] <- 12
+new_data$hour[1:5] <- 9:13
+
+
+head(new_data)
+```
+
+With Decision Tree:
+
+```{r pred unseen v2, message=FALSE, warning=FALSE}
+test_pred <- predict(best_tree_model, new_data[,-9])
+test_pred
+pred_THYAO <- predict(boosting_model, new_data[,-9])
+mae <- mean(abs(test_pred - new_data$price))
+print(paste("Mean Absolute Error (MAE):", mae))
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse <- round(sqrt(mean((test_pred - new_data$price)^2)),3)
+print(paste("Root Mean Squared Error (RMSE):", rmse))
+
+# Calculate Mean Absolute Percentage Error (MAPE)
+mape <- mean(abs((test_pred - new_data$price) / new_data$price) * 100, na.rm = TRUE)
+cat("Mean Absolute Percentage Error (MAPE):", mape, "\n")
+
+# Calculate Weighted Mean Absolute Percentage Error (WMAPE)
+wmape <- calculate_wmape(test_pred, new_data$price)
+print(paste("Weighted Mean Absolute Percentage Error (WMAPE):", wmape))
+```
+
+With ARIMA: 
+
+```{r pred unseen v3, message=FALSE, warning=FALSE}
+forecast_values <- forecast(arima_model, h = nrow(new_data))  
+forecast_values$mean
+mae <- mean(abs(forecast_values$mean - new_data$price))
+mse <- mean((forecast_values$mean - new_data$price)^2)
+rmse <- sqrt(mse)
+mape <- mean(abs((forecast_values$mean - new_data$price) / new_data$price) * 100, na.rm = TRUE)
+wmape <- calculate_wmape(forecast_values$mean, new_data$price)
+cat("MAE:", mae, "\n")
+cat("MSE:", mse, "\n")
+cat("RMSE:", rmse, "\n")
+cat("MAPE:", mape, "\n")
+cat("WMAPE:",wmape, "\n")
+```
