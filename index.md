@@ -16,7 +16,7 @@ Here is the [Homework 2 description](files/HW2/IE582_Fall23_Homework2.pdf) for t
 Here you can check [my approach](files/HW2/IE582HW2.html) to the Homework 2.<br>
 Also, you can achieve the [Datasets](https://github.com/BU-IE-582/fall-23-anillturgut/tree/main/files/HW2/Dataset), [R](files/HW2/IE582HW2RScripts.R) and [Rmd](files/HW2/IE582HW2.Rmd) files. <br>
 
-#### Homework 3 
+#### Homework 3 (Optional)
 
 Since Homework 3 is optional, I prefer that percentage to be determined by the first 2 homework assignments. <br>
 
